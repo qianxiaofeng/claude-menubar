@@ -1,17 +1,27 @@
 # Claude Code SwiftBar Status
 
-A [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that shows the status of your running Claude Code sessions in the macOS menu bar.
+A [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that shows the status of your running Claude Code sessions in the macOS menu bar. Each session gets its own independent menu bar icon that auto-hides when the session ends.
 
 ## Status Indicators
 
 | Icon | Color | Meaning |
 |------|-------|---------|
-| Filled circle | Green | Session is actively running (transcript updated within 15s) |
-| Exclamation circle | Orange | Session is waiting for tool approval |
-| Filled circle | Gray | Session is idle |
-| Dashed circle | Dark | No Claude process detected for this slot |
+| Lightning bolt | Green | Session is actively running |
+| Warning triangle | Orange | Session is waiting for tool approval |
+| Moon | Gray | Session is idle |
 
-The menu bar icon reflects the most urgent status across all sessions. Click to expand the dropdown and see each session individually, with project name and per-session click-to-focus.
+When no Claude session exists for a slot, its icon is automatically hidden.
+
+## How It Works
+
+Each slot is a symlink (`ClaudeBar-1.2s.sh`, `ClaudeBar-2.2s.sh`, ...) pointing to the same `ClaudeBar.sh` script. The script extracts its slot number from the filename and monitors only the Nth Claude process (sorted by PID). When no process exists for that slot, the script outputs nothing and SwiftBar hides the icon.
+
+1. Finds running `claude` processes via `pgrep`, sorted by PID.
+2. Each slot picks the Nth process and maps it to its TTY and working directory.
+3. Locates the Claude Code transcript (`.jsonl`) under `~/.claude/projects/`.
+4. Determines status by checking transcript age and pending tool use.
+5. Outputs SwiftBar-formatted lines with SF Symbols.
+6. Clicking the icon runs `focus-iterm.sh` to activate the corresponding iTerm2 tab.
 
 ## Prerequisites
 
@@ -27,33 +37,35 @@ The menu bar icon reflects the most urgent status across all sessions. Click to 
 
    ```sh
    git clone https://github.com/<your-username>/claude-swiftbar-status.git
+   cd claude-swiftbar-status
    ```
 
-2. Create a symlink in your SwiftBar plugins directory. The filename determines the refresh interval (e.g. `2s` = every 2 seconds):
+2. Run the install script (creates 5 slots by default):
 
    ```sh
-   ln -s /path/to/claude-swiftbar-status/ClaudeBar.sh \
-     "$(defaults read com.ameba.SwiftBar PluginDirectory)/ClaudeBar.2s.sh"
+   ./install.sh
    ```
 
-3. SwiftBar will pick it up automatically. You can adjust the refresh interval by changing the filename (e.g. `ClaudeBar.1s.sh`, `ClaudeBar.5s.sh`).
+   To customize the number of slots:
 
-## Configuration
+   ```sh
+   ./install.sh 3   # create 3 slots
+   ```
 
-Edit `MAX_SESSIONS` at the top of `ClaudeBar.sh` to change how many Claude sessions to monitor (default: 3).
+3. SwiftBar will pick them up automatically. Icons appear only when Claude sessions are running.
 
-## How It Works
+## Uninstallation
 
-1. Finds running `claude` processes via `pgrep` and maps each to its TTY and working directory.
-2. Locates the Claude Code transcript (`.jsonl`) for each session under `~/.claude/projects/`.
-3. Determines status by checking transcript age and whether the last assistant message contains a pending tool use.
-4. Outputs SwiftBar-formatted lines with SF Symbols.
-5. Clicking a session in the dropdown runs `focus-iterm.sh`, which uses AppleScript to activate the iTerm2 tab owning that TTY.
+```sh
+./uninstall.sh
+```
 
 ## Files
 
 - **`ClaudeBar.sh`** - Main SwiftBar plugin script
 - **`focus-iterm.sh`** - Helper that focuses the iTerm2 tab for a given TTY
+- **`install.sh`** - Creates symlinks in the SwiftBar plugins directory
+- **`uninstall.sh`** - Removes all ClaudeBar symlinks
 
 ## License
 

@@ -3,12 +3,12 @@
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 #
-# Monitors up to MAX_SESSIONS Claude Code instances.
-# Menu bar shows the most urgent status; dropdown lists each session.
+# Each symlink (ClaudeBar-N.2s.sh) monitors the Nth Claude Code session.
+# Empty output when no session exists → icon auto-hides.
 
-MAX_SESSIONS=3
 # Resolve symlinks so HELPER works when SwiftBar runs a symlinked plugin
 SELF="$0"
+ORIG="$SELF"
 if [[ -L "$SELF" ]]; then
     LINK="$(readlink "$SELF")"
     [[ "$LINK" != /* ]] && LINK="$(dirname "$SELF")/$LINK"
@@ -17,52 +17,57 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 HELPER="$SCRIPT_DIR/focus-iterm.sh"
 
+# Extract slot number from filename: ClaudeBar-N.2s.sh → N
+# If no slot number found (running directly), default to 1
+SLOT_NUM=1
+BASENAME="$(basename "$ORIG")"
+if [[ "$BASENAME" =~ ^ClaudeBar-([0-9]+)\. ]]; then
+    SLOT_NUM=${match[1]}
+fi
+
 # sfconfig base64: {"renderingMode":"Palette","colors":["<hex>"]}
-SF_DARK=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjNDg0ODRBIl19
-SF_GREEN=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjMzJENzRCIl19
-SF_ORANGE=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjRkY5RjBBIl19
-SF_GRAY=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjNjM2MzY2Il19
+SF_GREEN=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjMzJENzRCIl19    # #32D74B
+SF_ORANGE=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjRkY5RjBBIl19   # #FF9F0A
+SF_GRAY=eyJyZW5kZXJpbmdNb2RlIjoiUGFsZXR0ZSIsImNvbG9ycyI6WyIjOEU4RTkzIl19     # #8E8E93
 
 PIDS=($(pgrep -x claude 2>/dev/null | sort -n))
 PID_COUNT=${#PIDS[@]}
 
-# Gather per-session info: 4 positional args each (tty, cwd, transcript, file_age)
-ARGS=()
-for i in $(seq 1 $MAX_SESSIONS); do
-    if (( PID_COUNT < i )); then
-        ARGS+=("" "" "" "0")
-    else
-        PID=${PIDS[$i]}
-        TTY_DEV="/dev/$(ps -o tty= -p "$PID" 2>/dev/null | xargs)"
-        CWD=$(lsof -p "$PID" -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-)
-        PROJECT_HASH=$(echo "$CWD" | sed 's|[/_]|-|g')
-        TRANSCRIPT=$(ls -t "$HOME/.claude/projects/$PROJECT_HASH"/*.jsonl 2>/dev/null | head -1)
-        if [[ -n "$TRANSCRIPT" ]]; then
-            FILE_AGE=$(( $(date +%s) - $(stat -f %m "$TRANSCRIPT") ))
-        else
-            FILE_AGE=0
-        fi
-        ARGS+=("$TTY_DEV" "$CWD" "$TRANSCRIPT" "$FILE_AGE")
-    fi
-done
+# If the Nth process doesn't exist, output nothing → icon hides
+if (( PID_COUNT < SLOT_NUM )); then
+    exit 0
+fi
 
-/usr/bin/python3 - "$HELPER" "$SF_DARK" "$SF_GREEN" "$SF_ORANGE" "$SF_GRAY" "$MAX_SESSIONS" "${ARGS[@]}" << 'PYEOF'
+PID=${PIDS[$SLOT_NUM]}
+TTY_DEV="/dev/$(ps -o tty= -p "$PID" 2>/dev/null | xargs)"
+CWD=$(lsof -p "$PID" -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-)
+PROJECT_HASH=$(echo "$CWD" | sed 's|[/_]|-|g')
+TRANSCRIPT=$(ls -t "$HOME/.claude/projects/$PROJECT_HASH"/*.jsonl 2>/dev/null | head -1)
+if [[ -n "$TRANSCRIPT" ]]; then
+    FILE_AGE=$(( $(date +%s) - $(stat -f %m "$TRANSCRIPT") ))
+else
+    FILE_AGE=0
+fi
+
+/usr/bin/python3 - "$HELPER" "$SF_GREEN" "$SF_ORANGE" "$SF_GRAY" \
+    "$TTY_DEV" "$CWD" "$TRANSCRIPT" "$FILE_AGE" << 'PYEOF'
 import json, sys, os
 
 helper = sys.argv[1]
-sf_dark = sys.argv[2]
-sf_green = sys.argv[3]
-sf_orange = sys.argv[4]
-sf_gray = sys.argv[5]
-max_sessions = int(sys.argv[6])
+sf_green = sys.argv[2]
+sf_orange = sys.argv[3]
+sf_gray = sys.argv[4]
+tty = sys.argv[5]
+cwd = sys.argv[6]
+transcript = sys.argv[7]
+file_age = int(sys.argv[8])
 
 STATUS_MAP = {
-    "inactive": ("circle.dashed", sf_dark),
-    "active":   ("circle.fill",   sf_green),
-    "pending":  ("exclamationmark.circle.fill", sf_orange),
-    "idle":     ("circle.fill",   sf_gray),
+    "active":   ("bolt.fill",                   sf_green),
+    "pending":  ("exclamationmark.triangle.fill", sf_orange),
+    "idle":     ("moon.fill",                    sf_gray),
 }
-PRIORITY = {"inactive": 0, "idle": 1, "active": 2, "pending": 3}
+STATUS_LABEL = {"active": "Running", "pending": "Needs input", "idle": "Idle"}
 
 def check_pending_tool(transcript):
     if not transcript:
@@ -100,46 +105,26 @@ def check_pending_tool(transcript):
         pass
     return pending
 
-# Determine each session's status
-sessions = []
-idx = 7
-for i in range(max_sessions):
-    tty = sys.argv[idx]
-    cwd = sys.argv[idx + 1]
-    transcript = sys.argv[idx + 2]
-    file_age = int(sys.argv[idx + 3])
-    idx += 4
+# Determine status
+if not transcript:
+    status = "active"
+elif file_age < 15:
+    status = "active"
+elif check_pending_tool(transcript):
+    status = "pending"
+else:
+    status = "idle"
 
-    click = f"bash={helper} terminal=false"
-    if tty:
-        click = f"bash={helper} param1={tty} terminal=false"
+click = f"bash={helper} param1={tty} terminal=false"
+project = os.path.basename(cwd) if cwd else ""
+img, cfg = STATUS_MAP[status]
 
-    if not tty:
-        status = "inactive"
-    elif not transcript:
-        status = "active"
-    elif file_age < 15:
-        status = "active"
-    elif check_pending_tool(transcript):
-        status = "pending"
-    else:
-        status = "idle"
-
-    project = os.path.basename(cwd) if cwd else ""
-    sessions.append((status, click, project))
-
-# Menu bar: show the most urgent session's icon
-best_idx = max(range(max_sessions), key=lambda i: PRIORITY[sessions[i][0]])
-best_status, best_click, _ = sessions[best_idx]
-img, cfg = STATUS_MAP[best_status]
-print(f"| sfimage={img} sfconfig={cfg} sfsize=14 {best_click}")
+# Menu bar: status icon, click to focus
+print(f"| sfimage={img} sfconfig={cfg} sfsize=15 {click}")
 
 # Dropdown
 print("---")
-for i, (status, click, project) in enumerate(sessions):
-    img, cfg = STATUS_MAP[status]
-    label = f"Session {i + 1}"
-    if project:
-        label += f": {project}"
-    print(f"{label} | sfimage={img} sfconfig={cfg} {click}")
+label = project if project else "Claude"
+print(f"{label} | sfimage={img} sfconfig={cfg} {click}")
+print(f"--{STATUS_LABEL[status]} | sfimage={img} sfconfig={cfg} size=12")
 PYEOF
