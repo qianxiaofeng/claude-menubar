@@ -5,10 +5,10 @@ A [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that shows the status 
 ## Status Indicators
 
 | Icon | Color | Meaning |
-|------|-------|---------|
-| Lightning bolt | Green | Session is actively running |
-| Warning triangle | Orange | Session is waiting for tool approval |
-| Moon | Gray | Session is idle |
+|:----:|:-----:|---------|
+| ↯ | Green | Session is actively running |
+| △ | Orange | Session is waiting for tool approval |
+| ☽ | Gray | Session is idle |
 
 When no Claude session exists for a slot, its icon is automatically hidden.
 
@@ -33,23 +33,24 @@ Each slot is a symlink (`ClaudeBar-1.2s.sh`, `ClaudeBar-2.2s.sh`, ...) pointing 
 
 ## Installation
 
-1. Clone this repository:
+1. Clone into your SwiftBar plugins directory with a `.` prefix (so SwiftBar ignores the repo files):
 
    ```sh
-   git clone https://github.com/<your-username>/claude-swiftbar-status.git
-   cd claude-swiftbar-status
+   PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory)
+   git clone https://github.com/qianxiaofeng/claude-swiftbar-status.git \
+     "$PLUGIN_DIR/.claude-swiftbar-status"
    ```
 
 2. Run the install script (creates 5 slots by default):
 
    ```sh
-   ./install.sh
+   "$PLUGIN_DIR/.claude-swiftbar-status/install.sh"
    ```
 
    To customize the number of slots:
 
    ```sh
-   ./install.sh 3   # create 3 slots
+   "$PLUGIN_DIR/.claude-swiftbar-status/install.sh" 3
    ```
 
 3. SwiftBar will pick them up automatically. Icons appear only when Claude sessions are running.
@@ -57,7 +58,8 @@ Each slot is a symlink (`ClaudeBar-1.2s.sh`, `ClaudeBar-2.2s.sh`, ...) pointing 
 ## Uninstallation
 
 ```sh
-./uninstall.sh
+PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory)
+"$PLUGIN_DIR/.claude-swiftbar-status/uninstall.sh"
 ```
 
 ## Files

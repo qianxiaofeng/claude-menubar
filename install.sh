@@ -21,6 +21,16 @@ if [[ ! -d "$PLUGIN_DIR" ]]; then
     exit 1
 fi
 
+# Warn if repo is inside plugin dir without dot-prefix (SwiftBar would execute all files)
+case "$SCRIPT_DIR" in
+    "$PLUGIN_DIR"/[!.]*)
+        echo "Warning: This repo is inside the SwiftBar plugin directory without a dot-prefix."
+        echo "SwiftBar will try to execute all files. Rename the directory to start with '.':"
+        echo "  mv \"$SCRIPT_DIR\" \"$PLUGIN_DIR/.$(basename "$SCRIPT_DIR")\""
+        exit 1
+        ;;
+esac
+
 # Clean up old formats
 rm -f "$PLUGIN_DIR"/ClaudeBar.*.sh
 rm -f "$PLUGIN_DIR"/ClaudeBar-*.sh
