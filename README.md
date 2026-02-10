@@ -2,7 +2,7 @@
 
 A [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that shows the status of your running Claude Code sessions in the macOS menu bar. Each session gets its own independent menu bar icon that auto-hides when the session ends.
 
-![Demo](demo.gif)
+![Demo](doc/demo.gif)
 
 ## Status Indicators
 
