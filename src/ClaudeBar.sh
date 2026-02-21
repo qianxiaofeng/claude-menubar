@@ -41,11 +41,10 @@ eval "TTY_DEV=\$SLOT_${SLOT_NUM}_TTY"
 eval "CWD=\$SLOT_${SLOT_NUM}_CWD"
 eval "TRANSCRIPT=\$SLOT_${SLOT_NUM}_TRANSCRIPT"
 eval "MTIME=\$SLOT_${SLOT_NUM}_MTIME"
-eval "PREV_MTIME=\$SLOT_${SLOT_NUM}_PREV_MTIME"
 
 /usr/bin/python3 - "$HELPER" "$SF_GREEN" "$SF_ORANGE" "$SF_GRAY" \
-    "$TTY_DEV" "$CWD" "$TRANSCRIPT" "$MTIME" "$PREV_MTIME" << 'PYEOF'
-import json, sys, os
+    "$TTY_DEV" "$CWD" "$TRANSCRIPT" "$MTIME" << 'PYEOF'
+import json, sys, os, time
 
 helper = sys.argv[1]
 sf_green = sys.argv[2]
@@ -55,7 +54,6 @@ tty = sys.argv[5]
 cwd = sys.argv[6]
 transcript = sys.argv[7]
 mtime = sys.argv[8]
-prev_mtime = sys.argv[9]
 
 STATUS_MAP = {
     "active":   ("bolt.fill",                   sf_green),
@@ -64,10 +62,15 @@ STATUS_MAP = {
 }
 STATUS_LABEL = {"active": "Running", "pending": "Needs input", "idle": "Idle"}
 
-def check_pending_tool(transcript):
-    """Parse transcript tail for unpaired tool_use."""
+def parse_transcript_tail(transcript):
+    """Parse transcript tail, return (last_role, has_pending_tool).
+
+    last_role: 'user' | 'assistant' | None
+    has_pending_tool: True if last assistant message has unpaired tool_use
+    """
     if not transcript:
-        return False
+        return None, False
+    last_role = None
     pending = False
     try:
         with open(transcript, 'rb') as f:
@@ -89,29 +92,35 @@ def check_pending_tool(transcript):
             role = msg.get('role', '')
             content = msg.get('content', [])
             if t == 'assistant' and role == 'assistant':
+                last_role = 'assistant'
                 if isinstance(content, list):
                     types = [c.get('type') for c in content if isinstance(c, dict)]
-                    if 'tool_use' in types:
-                        pending = True
-            elif t == 'user' and role == 'user' and isinstance(content, list):
-                types = [c.get('type') for c in content if isinstance(c, dict)]
-                if 'tool_result' in types:
-                    pending = False
+                    pending = 'tool_use' in types
+            elif t == 'user' and role == 'user':
+                last_role = 'user'
+                if isinstance(content, list):
+                    types = [c.get('type') for c in content if isinstance(c, dict)]
+                    if 'tool_result' in types:
+                        pending = False
     except Exception:
         pass
-    return pending
+    return last_role, pending
 
-def determine_status(transcript, mtime, prev_mtime):
-    """Determine status via mtime delta between cache cycles."""
-    if not transcript:
+def determine_status(transcript, mtime):
+    """Determine status via transcript content and mtime age."""
+    if not transcript or not mtime:
         return "active"
-    if mtime != prev_mtime:
+    age = time.time() - int(mtime)
+    if age < 10:
         return "active"
-    if check_pending_tool(transcript):
+    last_role, pending = parse_transcript_tail(transcript)
+    if last_role == 'user':
+        return "active" if age < 120 else "idle"
+    if pending:
         return "pending"
     return "idle"
 
-status = determine_status(transcript, mtime, prev_mtime)
+status = determine_status(transcript, mtime)
 
 click = f"bash={helper} param1={tty} terminal=false"
 project = os.path.basename(cwd) if cwd else ""

@@ -1,22 +1,25 @@
-"""Tests for the mtime-delta status detection logic in ClaudeBar.sh's embedded Python.
+"""Tests for the transcript-based status detection logic in ClaudeBar.sh's embedded Python.
 
 Covers:
-- mtime delta detection (active when mtime changed, idle when unchanged)
-- First cycle behavior (no prev_mtime → active)
+- mtime age fast path (active when recently modified)
+- Last-role detection (user → active, assistant → idle/pending)
 - Pending detection via unpaired tool_use in transcript
+- Stale session safeguard (>120s)
 - Edge cases: no transcript, empty mtime values
 """
 
 import json
 import os
 import tempfile
+import time
 import unittest
 
 
-def check_pending_tool(transcript):
-    """Exact copy of the check_pending_tool function from ClaudeBar.sh."""
+def parse_transcript_tail(transcript):
+    """Exact copy of parse_transcript_tail from ClaudeBar.sh."""
     if not transcript:
-        return False
+        return None, False
+    last_role = None
     pending = False
     try:
         with open(transcript, 'rb') as f:
@@ -38,26 +41,32 @@ def check_pending_tool(transcript):
             role = msg.get('role', '')
             content = msg.get('content', [])
             if t == 'assistant' and role == 'assistant':
+                last_role = 'assistant'
                 if isinstance(content, list):
                     types = [c.get('type') for c in content if isinstance(c, dict)]
-                    if 'tool_use' in types:
-                        pending = True
-            elif t == 'user' and role == 'user' and isinstance(content, list):
-                types = [c.get('type') for c in content if isinstance(c, dict)]
-                if 'tool_result' in types:
-                    pending = False
+                    pending = 'tool_use' in types
+            elif t == 'user' and role == 'user':
+                last_role = 'user'
+                if isinstance(content, list):
+                    types = [c.get('type') for c in content if isinstance(c, dict)]
+                    if 'tool_result' in types:
+                        pending = False
     except Exception:
         pass
-    return pending
+    return last_role, pending
 
 
-def determine_status(transcript, mtime, prev_mtime):
+def determine_status(transcript, mtime):
     """Exact copy of determine_status from ClaudeBar.sh."""
-    if not transcript:
+    if not transcript or not mtime:
         return "active"
-    if mtime != prev_mtime:
+    age = time.time() - int(mtime)
+    if age < 10:
         return "active"
-    if check_pending_tool(transcript):
+    last_role, pending = parse_transcript_tail(transcript)
+    if last_role == 'user':
+        return "active" if age < 120 else "idle"
+    if pending:
         return "pending"
     return "idle"
 
@@ -80,85 +89,163 @@ class StatusDetectionBase(unittest.TestCase):
                     f.write(json.dumps(line) + "\n")
         return p
 
+    def mtime_ago(self, seconds):
+        """Return an mtime string for N seconds ago."""
+        return str(int(time.time()) - seconds)
 
-class TestMtimeDeltaDetection(StatusDetectionBase):
+
+class TestMtimeAgeFastPath(StatusDetectionBase):
+    """mtime < 10s → active regardless of transcript content."""
 
     def test_no_transcript_is_active(self):
-        """No transcript → active (new session, not yet written)."""
-        self.assertEqual(determine_status("", "", ""), "active")
+        self.assertEqual(determine_status("", ""), "active")
 
-    def test_first_cycle_no_prev_mtime_is_active(self):
-        """First cache cycle: mtime set, prev_mtime empty → active."""
-        tp = self.add_transcript("first")
-        self.assertEqual(determine_status(tp, "1700000000", ""), "active")
+    def test_empty_mtime_is_active(self):
+        tp = self.add_transcript("no_mtime")
+        self.assertEqual(determine_status(tp, ""), "active")
 
-    def test_mtime_changed_is_active(self):
-        """mtime differs from prev_mtime → active (transcript being written)."""
-        tp = self.add_transcript("changing")
-        self.assertEqual(determine_status(tp, "1700000002", "1700000000"), "active")
+    def test_recent_mtime_is_active(self):
+        tp = self.add_transcript("recent")
+        self.assertEqual(determine_status(tp, self.mtime_ago(3)), "active")
 
-    def test_mtime_unchanged_no_pending_is_idle(self):
-        """mtime same as prev_mtime, no pending tool → idle."""
-        tp = self.add_transcript("idle", lines=[
+    def test_recent_mtime_overrides_idle_transcript(self):
+        """Even if transcript shows assistant done, recent mtime → active."""
+        tp = self.add_transcript("recent_idle", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "text", "text": "Done!"}]}}
         ])
-        self.assertEqual(determine_status(tp, "1700000000", "1700000000"), "idle")
+        self.assertEqual(determine_status(tp, self.mtime_ago(5)), "active")
 
-    def test_mtime_unchanged_with_pending_tool_is_pending(self):
-        """mtime same, unpaired tool_use → pending."""
-        tp = self.add_transcript("pending", lines=[
+    def test_boundary_at_10s(self):
+        """Exactly 10s ago → NOT fast path (age < 10 is false)."""
+        tp = self.add_transcript("boundary", lines=[
             {"type": "assistant", "message": {"role": "assistant",
-             "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}
+             "content": [{"type": "text", "text": "Done!"}]}}
         ])
-        self.assertEqual(determine_status(tp, "1700000000", "1700000000"), "pending")
+        self.assertEqual(determine_status(tp, self.mtime_ago(10)), "idle")
 
-    def test_mtime_changed_overrides_pending_tool(self):
-        """mtime changed takes priority over pending tool_use → active."""
-        tp = self.add_transcript("active_pending", lines=[
+
+class TestLastRoleDetection(StatusDetectionBase):
+    """When mtime > 10s, use last transcript role to determine status."""
+
+    def test_last_user_message_is_active(self):
+        """User sent a message, Claude hasn't responded → active (API call)."""
+        tp = self.add_transcript("user_waiting", lines=[
+            {"type": "user", "message": {"role": "user",
+             "content": [{"type": "text", "text": "Hello"}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(30)), "active")
+
+    def test_last_user_tool_result_is_active(self):
+        """Tool result sent, Claude processing → active (API call)."""
+        tp = self.add_transcript("tool_result", lines=[
             {"type": "assistant", "message": {"role": "assistant",
-             "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}
+             "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}},
+            {"type": "user", "message": {"role": "user",
+             "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
         ])
-        self.assertEqual(determine_status(tp, "1700000002", "1700000000"), "active")
+        self.assertEqual(determine_status(tp, self.mtime_ago(60)), "active")
 
-    def test_swiftbar_restart_first_cycle(self):
-        """After SwiftBar restart, prev_mtime is empty → active for 1 cycle."""
-        tp = self.add_transcript("restart")
-        self.assertEqual(determine_status(tp, "1700000050", ""), "active")
+    def test_last_assistant_text_is_idle(self):
+        """Claude responded with text, waiting for user → idle."""
+        tp = self.add_transcript("assistant_done", lines=[
+            {"type": "user", "message": {"role": "user",
+             "content": [{"type": "text", "text": "Hello"}]}},
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "text", "text": "Hi there!"}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(30)), "idle")
+
+    def test_last_assistant_tool_use_is_pending(self):
+        """Claude called a tool, waiting for result → pending."""
+        tp = self.add_transcript("tool_pending", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(30)), "pending")
+
+    def test_api_latency_60s_is_active(self):
+        """60s since user message (long API call) → still active."""
+        tp = self.add_transcript("slow_api", lines=[
+            {"type": "user", "message": {"role": "user",
+             "content": [{"type": "text", "text": "Complex task"}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(60)), "active")
+
+    def test_api_latency_110s_is_active(self):
+        """110s since user message (very long API call) → still active."""
+        tp = self.add_transcript("very_slow_api", lines=[
+            {"type": "user", "message": {"role": "user",
+             "content": [{"type": "text", "text": "Very complex task"}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(110)), "active")
 
 
-class TestCheckPendingTool(StatusDetectionBase):
+class TestStaleSessionSafeguard(StatusDetectionBase):
+    """Sessions >120s without transcript update → idle (crash/abandon)."""
 
-    def test_empty_transcript_path(self):
-        self.assertFalse(check_pending_tool(""))
+    def test_user_message_over_120s_is_idle(self):
+        """Even with last=user, >120s means something went wrong → idle."""
+        tp = self.add_transcript("stale", lines=[
+            {"type": "user", "message": {"role": "user",
+             "content": [{"type": "text", "text": "Hello"}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(130)), "idle")
+
+    def test_assistant_over_120s_is_idle(self):
+        """Assistant finished >120s ago → idle."""
+        tp = self.add_transcript("old_idle", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "text", "text": "Done"}]}}
+        ])
+        self.assertEqual(determine_status(tp, self.mtime_ago(200)), "idle")
+
+
+class TestParseTranscriptTail(StatusDetectionBase):
+    """Direct tests for parse_transcript_tail."""
+
+    def test_empty_path(self):
+        self.assertEqual(parse_transcript_tail(""), (None, False))
 
     def test_nonexistent_file(self):
-        self.assertFalse(check_pending_tool("/nonexistent/path.jsonl"))
+        self.assertEqual(parse_transcript_tail("/nonexistent/path.jsonl"),
+                         (None, False))
 
-    def test_no_tool_use(self):
-        tp = self.add_transcript("text_only", lines=[
+    def test_empty_file(self):
+        tp = self.add_transcript("empty")
+        self.assertEqual(parse_transcript_tail(tp), (None, False))
+
+    def test_text_only_assistant(self):
+        tp = self.add_transcript("text", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "text", "text": "Hello"}]}}
         ])
-        self.assertFalse(check_pending_tool(tp))
+        self.assertEqual(parse_transcript_tail(tp), ("assistant", False))
+
+    def test_thinking_and_text(self):
+        tp = self.add_transcript("thinking", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "thinking", "thinking": "..."}, {"type": "text", "text": "Done"}]}}
+        ])
+        self.assertEqual(parse_transcript_tail(tp), ("assistant", False))
 
     def test_unpaired_tool_use(self):
         tp = self.add_transcript("unpaired", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
         ])
-        self.assertTrue(check_pending_tool(tp))
+        self.assertEqual(parse_transcript_tail(tp), ("assistant", True))
 
-    def test_paired_tool_use_and_result(self):
+    def test_paired_tool_use(self):
         tp = self.add_transcript("paired", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
         ])
-        self.assertFalse(check_pending_tool(tp))
+        self.assertEqual(parse_transcript_tail(tp), ("user", False))
 
-    def test_multiple_tools_last_unpaired(self):
+    def test_multiple_rounds(self):
         tp = self.add_transcript("multi", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
@@ -167,32 +254,27 @@ class TestCheckPendingTool(StatusDetectionBase):
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}]}}
         ])
-        self.assertTrue(check_pending_tool(tp))
+        self.assertEqual(parse_transcript_tail(tp), ("assistant", True))
 
-    def test_multiple_tools_all_paired(self):
+    def test_all_paired_multiple_rounds(self):
         tp = self.add_transcript("all_paired", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
             {"type": "assistant", "message": {"role": "assistant",
-             "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}]}},
+             "content": [{"type": "text", "text": "All done!"}]}}
+        ])
+        self.assertEqual(parse_transcript_tail(tp), ("assistant", False))
+
+    def test_progress_lines_ignored(self):
+        """Progress lines don't affect last_role tracking."""
+        tp = self.add_transcript("progress", lines=[
             {"type": "user", "message": {"role": "user",
-             "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "done"}]}}
+             "content": [{"type": "text", "text": "Hi"}]}},
+            {"type": "progress", "content": {"type": "status", "text": "thinking..."}}
         ])
-        self.assertFalse(check_pending_tool(tp))
-
-    def test_empty_file(self):
-        tp = self.add_transcript("empty")
-        self.assertFalse(check_pending_tool(tp))
-
-    def test_non_tool_content_types_ignored(self):
-        """thinking and text blocks don't trigger pending."""
-        tp = self.add_transcript("thinking", lines=[
-            {"type": "assistant", "message": {"role": "assistant",
-             "content": [{"type": "thinking", "thinking": "..."}, {"type": "text", "text": "Done"}]}}
-        ])
-        self.assertFalse(check_pending_tool(tp))
+        self.assertEqual(parse_transcript_tail(tp), ("user", False))
 
 
 if __name__ == "__main__":
