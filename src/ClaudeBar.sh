@@ -106,18 +106,34 @@ def parse_transcript_tail(transcript):
         pass
     return last_role, pending
 
-def determine_status(transcript, mtime):
+def determine_status(transcript, mtime_unused):
     """Determine status via transcript content and mtime age."""
-    if not transcript or not mtime:
+    if not transcript:
         return "active"
-    age = time.time() - int(mtime)
+    try:
+        mtime = os.path.getmtime(transcript)
+    except OSError:
+        return "active"
+    age = time.time() - mtime
+
+    # Always parse transcript (cheap: last 64KB)
+    last_role, pending = parse_transcript_tail(transcript)
+
+    # Pending: tool_use waiting for user action
+    # 3s grace period filters auto-approved tools (complete in <2s)
+    # 120s timeout degrades to idle (session likely abandoned)
+    if pending and age >= 3:
+        return "pending" if age < 120 else "idle"
+
+    # Recent activity -> active
     if age < 10:
         return "active"
-    last_role, pending = parse_transcript_tail(transcript)
+
+    # User sent message, Claude processing (API call)
     if last_role == 'user':
         return "active" if age < 120 else "idle"
-    if pending:
-        return "pending"
+
+    # Assistant finished -> idle
     return "idle"
 
 status = determine_status(transcript, mtime)

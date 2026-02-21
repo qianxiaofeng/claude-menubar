@@ -2,10 +2,11 @@
 
 Covers:
 - mtime age fast path (active when recently modified)
-- Last-role detection (user → active, assistant → idle/pending)
+- Last-role detection (user -> active, assistant -> idle/pending)
 - Pending detection via unpaired tool_use in transcript
+- Pending grace period (3s) and timeout (120s)
 - Stale session safeguard (>120s)
-- Edge cases: no transcript, empty mtime values
+- Edge cases: no transcript, missing file
 """
 
 import json
@@ -56,18 +57,34 @@ def parse_transcript_tail(transcript):
     return last_role, pending
 
 
-def determine_status(transcript, mtime):
+def determine_status(transcript, mtime_unused=None):
     """Exact copy of determine_status from ClaudeBar.sh."""
-    if not transcript or not mtime:
+    if not transcript:
         return "active"
-    age = time.time() - int(mtime)
+    try:
+        mtime = os.path.getmtime(transcript)
+    except OSError:
+        return "active"
+    age = time.time() - mtime
+
+    # Always parse transcript (cheap: last 64KB)
+    last_role, pending = parse_transcript_tail(transcript)
+
+    # Pending: tool_use waiting for user action
+    # 3s grace period filters auto-approved tools (complete in <2s)
+    # 120s timeout degrades to idle (session likely abandoned)
+    if pending and age >= 3:
+        return "pending" if age < 120 else "idle"
+
+    # Recent activity -> active
     if age < 10:
         return "active"
-    last_role, pending = parse_transcript_tail(transcript)
+
+    # User sent message, Claude processing (API call)
     if last_role == 'user':
         return "active" if age < 120 else "idle"
-    if pending:
-        return "pending"
+
+    # Assistant finished -> idle
     return "idle"
 
 
@@ -89,116 +106,189 @@ class StatusDetectionBase(unittest.TestCase):
                     f.write(json.dumps(line) + "\n")
         return p
 
-    def mtime_ago(self, seconds):
-        """Return an mtime string for N seconds ago."""
-        return str(int(time.time()) - seconds)
+    def set_mtime(self, path, seconds_ago):
+        """Set file mtime to N seconds ago."""
+        t = time.time() - seconds_ago
+        os.utime(path, (t, t))
 
 
 class TestMtimeAgeFastPath(StatusDetectionBase):
-    """mtime < 10s → active regardless of transcript content."""
+    """mtime < 10s -> active regardless of transcript content."""
 
     def test_no_transcript_is_active(self):
-        self.assertEqual(determine_status("", ""), "active")
+        self.assertEqual(determine_status(""), "active")
 
-    def test_empty_mtime_is_active(self):
-        tp = self.add_transcript("no_mtime")
-        self.assertEqual(determine_status(tp, ""), "active")
+    def test_nonexistent_file_is_active(self):
+        self.assertEqual(determine_status("/nonexistent/path.jsonl"), "active")
 
     def test_recent_mtime_is_active(self):
         tp = self.add_transcript("recent")
-        self.assertEqual(determine_status(tp, self.mtime_ago(3)), "active")
+        self.set_mtime(tp, 3)
+        self.assertEqual(determine_status(tp), "active")
 
     def test_recent_mtime_overrides_idle_transcript(self):
-        """Even if transcript shows assistant done, recent mtime → active."""
+        """Even if transcript shows assistant done, recent mtime -> active."""
         tp = self.add_transcript("recent_idle", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "text", "text": "Done!"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(5)), "active")
+        self.set_mtime(tp, 5)
+        self.assertEqual(determine_status(tp), "active")
 
     def test_boundary_at_10s(self):
-        """Exactly 10s ago → NOT fast path (age < 10 is false)."""
+        """Exactly 10s ago -> NOT fast path (age < 10 is false)."""
         tp = self.add_transcript("boundary", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "text", "text": "Done!"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(10)), "idle")
+        self.set_mtime(tp, 10)
+        self.assertEqual(determine_status(tp), "idle")
 
 
 class TestLastRoleDetection(StatusDetectionBase):
     """When mtime > 10s, use last transcript role to determine status."""
 
     def test_last_user_message_is_active(self):
-        """User sent a message, Claude hasn't responded → active (API call)."""
+        """User sent a message, Claude hasn't responded -> active (API call)."""
         tp = self.add_transcript("user_waiting", lines=[
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "text", "text": "Hello"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(30)), "active")
+        self.set_mtime(tp, 30)
+        self.assertEqual(determine_status(tp), "active")
 
     def test_last_user_tool_result_is_active(self):
-        """Tool result sent, Claude processing → active (API call)."""
+        """Tool result sent, Claude processing -> active (API call)."""
         tp = self.add_transcript("tool_result", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}},
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(60)), "active")
+        self.set_mtime(tp, 60)
+        self.assertEqual(determine_status(tp), "active")
 
     def test_last_assistant_text_is_idle(self):
-        """Claude responded with text, waiting for user → idle."""
+        """Claude responded with text, waiting for user -> idle."""
         tp = self.add_transcript("assistant_done", lines=[
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "text", "text": "Hello"}]}},
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "text", "text": "Hi there!"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(30)), "idle")
+        self.set_mtime(tp, 30)
+        self.assertEqual(determine_status(tp), "idle")
 
     def test_last_assistant_tool_use_is_pending(self):
-        """Claude called a tool, waiting for result → pending."""
+        """Claude called a tool, waiting for result -> pending (after 3s)."""
         tp = self.add_transcript("tool_pending", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(30)), "pending")
+        self.set_mtime(tp, 30)
+        self.assertEqual(determine_status(tp), "pending")
 
     def test_api_latency_60s_is_active(self):
-        """60s since user message (long API call) → still active."""
+        """60s since user message (long API call) -> still active."""
         tp = self.add_transcript("slow_api", lines=[
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "text", "text": "Complex task"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(60)), "active")
+        self.set_mtime(tp, 60)
+        self.assertEqual(determine_status(tp), "active")
 
     def test_api_latency_110s_is_active(self):
-        """110s since user message (very long API call) → still active."""
+        """110s since user message (very long API call) -> still active."""
         tp = self.add_transcript("very_slow_api", lines=[
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "text", "text": "Very complex task"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(110)), "active")
+        self.set_mtime(tp, 110)
+        self.assertEqual(determine_status(tp), "active")
+
+
+class TestPendingGracePeriod(StatusDetectionBase):
+    """Pending has a 3s grace period to filter auto-approved tools."""
+
+    def test_pending_not_shown_under_3s(self):
+        """Within 3s grace period, pending tool_use shows as active."""
+        tp = self.add_transcript("pending_early", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
+        ])
+        self.set_mtime(tp, 1)
+        self.assertEqual(determine_status(tp), "active")
+
+    def test_pending_detected_at_3s(self):
+        """At exactly 3s, pending is detected (age >= 3)."""
+        tp = self.add_transcript("pending_3s", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
+        ])
+        self.set_mtime(tp, 3)
+        self.assertEqual(determine_status(tp), "pending")
+
+    def test_pending_at_5s(self):
+        """At 5s, still pending."""
+        tp = self.add_transcript("pending_5s", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}
+        ])
+        self.set_mtime(tp, 5)
+        self.assertEqual(determine_status(tp), "pending")
+
+
+class TestPendingTimeout(StatusDetectionBase):
+    """Pending degrades to idle after 120s (session likely abandoned)."""
+
+    def test_pending_at_119s(self):
+        """119s -> still pending."""
+        tp = self.add_transcript("pending_119", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
+        ])
+        self.set_mtime(tp, 119)
+        self.assertEqual(determine_status(tp), "pending")
+
+    def test_pending_timeout_120s(self):
+        """At 120s, pending degrades to idle."""
+        tp = self.add_transcript("pending_timeout", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
+        ])
+        self.set_mtime(tp, 120)
+        self.assertEqual(determine_status(tp), "idle")
+
+    def test_pending_timeout_200s(self):
+        """200s -> idle (well past timeout)."""
+        tp = self.add_transcript("pending_200", lines=[
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}}
+        ])
+        self.set_mtime(tp, 200)
+        self.assertEqual(determine_status(tp), "idle")
 
 
 class TestStaleSessionSafeguard(StatusDetectionBase):
-    """Sessions >120s without transcript update → idle (crash/abandon)."""
+    """Sessions >120s without transcript update -> idle (crash/abandon)."""
 
     def test_user_message_over_120s_is_idle(self):
-        """Even with last=user, >120s means something went wrong → idle."""
+        """Even with last=user, >120s means something went wrong -> idle."""
         tp = self.add_transcript("stale", lines=[
             {"type": "user", "message": {"role": "user",
              "content": [{"type": "text", "text": "Hello"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(130)), "idle")
+        self.set_mtime(tp, 130)
+        self.assertEqual(determine_status(tp), "idle")
 
     def test_assistant_over_120s_is_idle(self):
-        """Assistant finished >120s ago → idle."""
+        """Assistant finished >120s ago -> idle."""
         tp = self.add_transcript("old_idle", lines=[
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "text", "text": "Done"}]}}
         ])
-        self.assertEqual(determine_status(tp, self.mtime_ago(200)), "idle")
+        self.set_mtime(tp, 200)
+        self.assertEqual(determine_status(tp), "idle")
 
 
 class TestParseTranscriptTail(StatusDetectionBase):
