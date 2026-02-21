@@ -43,40 +43,55 @@ for i in $(seq 1 "$SLOTS"); do
     ln -sf "$SCRIPT_DIR/src/ClaudeBar.sh" "$PLUGIN_DIR/ClaudeBar-$i.2s.sh"
 done
 
-# Install SessionStart hook for TTY → transcript mapping
-HOOK_CMD="$SCRIPT_DIR/src/session-track.sh"
+# Install Claude Code hook for session tracking
+SESSION_TRACK_CMD="$SCRIPT_DIR/src/session-track.sh"
 
 # Merge hook config into ~/.claude/settings.json
 SETTINGS="$HOME/.claude/settings.json"
 python3 -c "
 import json, os, sys
 
-path = '$SETTINGS'
+path = sys.argv[1]
+session_track_cmd = sys.argv[2]
+
 cfg = {}
 if os.path.exists(path):
     with open(path) as f:
         cfg = json.load(f)
 
-hook_cmd = '$HOOK_CMD'
-new_hook = {'type': 'command', 'command': hook_cmd}
-new_matcher = {'hooks': [new_hook]}
+hooks_cfg = cfg.setdefault('hooks', {})
+changed = False
 
-hooks = cfg.setdefault('hooks', {})
-matchers = hooks.setdefault('SessionStart', [])
+# --- Cleanup: remove old update-status.sh hooks from previous installs ---
+for event in ('UserPromptSubmit', 'Stop', 'Notification', 'SessionEnd'):
+    matchers = hooks_cfg.get(event, [])
+    filtered = [m for m in matchers
+                if not any('update-status.sh' in h.get('command', '')
+                           for h in m.get('hooks', []))]
+    if len(filtered) != len(matchers):
+        changed = True
+        if filtered:
+            hooks_cfg[event] = filtered
+        else:
+            hooks_cfg.pop(event, None)
 
-# Avoid duplicates
-for m in matchers:
-    for h in m.get('hooks', []):
-        if h.get('command', '').endswith('session-track.sh'):
-            sys.exit(0)
+# --- Register SessionStart hook ---
+matchers = hooks_cfg.setdefault('SessionStart', [])
+already = any('session-track.sh' in h.get('command', '')
+              for m in matchers for h in m.get('hooks', []))
+if not already:
+    matchers.append({'hooks': [{'type': 'command', 'command': session_track_cmd}]})
+    changed = True
 
-matchers.append(new_matcher)
+if not hooks_cfg:
+    cfg.pop('hooks', None)
 
-with open(path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-    f.write('\n')
-"
+if changed:
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+        f.write('\n')
+" "$SETTINGS" "$SESSION_TRACK_CMD"
 
 echo "Installed cache + $SLOTS slot(s) in $PLUGIN_DIR"
 ls -la "$PLUGIN_DIR"/ClaudeBar-*.sh
-echo "Installed SessionStart hook: $HOOK_CMD"
+echo "Installed hook: SessionStart"

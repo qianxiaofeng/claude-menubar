@@ -21,10 +21,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="$SCRIPT_DIR/../.swiftbar"
 mkdir -p "$STATE_DIR"
 
-# Read hook JSON from stdin and write state file
+# Read hook JSON from stdin, write state file for transcript resolution
 python3 -c "
-import json, sys
+import json, sys, os
 d = json.load(sys.stdin)
-with open('$STATE_DIR/session-$TTY.json', 'w') as f:
+state_dir = sys.argv[1]
+tty = sys.argv[2]
+with open(os.path.join(state_dir, 'session-' + tty + '.json'), 'w') as f:
     json.dump({'session_id': d.get('session_id',''), 'transcript_path': d.get('transcript_path','')}, f)
-"
+" "$STATE_DIR" "$TTY"

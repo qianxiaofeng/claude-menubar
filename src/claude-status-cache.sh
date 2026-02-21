@@ -19,6 +19,19 @@ SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 STATE_DIR="$SCRIPT_DIR/../.swiftbar"
 mkdir -p "$STATE_DIR"
 
+# 0) Load previous cache to carry forward mtime values (keyed by TTY)
+typeset -A OLD_MTIME_BY_TTY
+if [[ -f "$STATE_DIR/cache.env" ]]; then
+    source "$STATE_DIR/cache.env"
+    local _prev_slot=1
+    while (( _prev_slot <= ${SLOT_COUNT:-0} )); do
+        eval "_prev_tty=\$SLOT_${_prev_slot}_TTY"
+        eval "_prev_mtime=\$SLOT_${_prev_slot}_MTIME"
+        [[ -n "$_prev_tty" && -n "$_prev_mtime" ]] && OLD_MTIME_BY_TTY[$_prev_tty]=$_prev_mtime
+        (( _prev_slot++ ))
+    done
+fi
+
 # 1) Get all iTerm2 session TTYs in tab order (window → tab → session)
 ITERM_TTYS=("${(@f)$(osascript -e '
 tell application "iTerm2"
@@ -75,11 +88,24 @@ TMP="$STATE_DIR/cache.env.tmp"
         PROJECT_HASH=$(echo "$CWD" | sed 's|[/_]|-|g')
         TTY_SHORT="${TTY_DEV#/dev/}"
 
+        TRANSCRIPT=$(/usr/bin/python3 "$SCRIPT_DIR/resolve_transcript.py" \
+            "$TTY_SHORT" "$STATE_DIR" "$HOME/.claude/projects/$PROJECT_HASH" "$ACTIVE_CLAUDE_TTYS")
+        if [[ -n "$TRANSCRIPT" && -f "$TRANSCRIPT" ]]; then
+            MTIME=$(stat -f %m "$TRANSCRIPT")
+        else
+            TRANSCRIPT=""
+            MTIME=""
+        fi
+        PREV_MTIME="${OLD_MTIME_BY_TTY[$TTY_DEV]}"
+
         echo "SLOT_${slot}_TTY=$TTY_DEV"
         echo "SLOT_${slot}_PID=$PID"
         echo "SLOT_${slot}_CWD=$CWD"
         echo "SLOT_${slot}_PROJECT_HASH=$PROJECT_HASH"
         echo "SLOT_${slot}_TTY_SHORT=$TTY_SHORT"
+        echo "SLOT_${slot}_TRANSCRIPT=$TRANSCRIPT"
+        echo "SLOT_${slot}_MTIME=$MTIME"
+        echo "SLOT_${slot}_PREV_MTIME=$PREV_MTIME"
         (( slot++ ))
     done
 } > "$TMP"

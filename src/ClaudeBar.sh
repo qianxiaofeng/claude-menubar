@@ -38,21 +38,13 @@ source "$STATE_DIR/cache.env" 2>/dev/null || exit 0
 (( SLOT_COUNT < SLOT_NUM )) && exit 0
 
 eval "TTY_DEV=\$SLOT_${SLOT_NUM}_TTY"
-eval "PID=\$SLOT_${SLOT_NUM}_PID"
 eval "CWD=\$SLOT_${SLOT_NUM}_CWD"
-eval "PROJECT_HASH=\$SLOT_${SLOT_NUM}_PROJECT_HASH"
-eval "TTY_SHORT=\$SLOT_${SLOT_NUM}_TTY_SHORT"
-TRANSCRIPT=$(/usr/bin/python3 "$SCRIPT_DIR/resolve_transcript.py" \
-    "$TTY_SHORT" "$STATE_DIR" "$HOME/.claude/projects/$PROJECT_HASH" "$ACTIVE_CLAUDE_TTYS")
-if [[ -n "$TRANSCRIPT" && -f "$TRANSCRIPT" ]]; then
-    FILE_AGE=$(( $(date +%s) - $(stat -f %m "$TRANSCRIPT") ))
-else
-    TRANSCRIPT=""
-    FILE_AGE=0
-fi
+eval "TRANSCRIPT=\$SLOT_${SLOT_NUM}_TRANSCRIPT"
+eval "MTIME=\$SLOT_${SLOT_NUM}_MTIME"
+eval "PREV_MTIME=\$SLOT_${SLOT_NUM}_PREV_MTIME"
 
 /usr/bin/python3 - "$HELPER" "$SF_GREEN" "$SF_ORANGE" "$SF_GRAY" \
-    "$TTY_DEV" "$CWD" "$TRANSCRIPT" "$FILE_AGE" << 'PYEOF'
+    "$TTY_DEV" "$CWD" "$TRANSCRIPT" "$MTIME" "$PREV_MTIME" << 'PYEOF'
 import json, sys, os
 
 helper = sys.argv[1]
@@ -62,7 +54,8 @@ sf_gray = sys.argv[4]
 tty = sys.argv[5]
 cwd = sys.argv[6]
 transcript = sys.argv[7]
-file_age = int(sys.argv[8])
+mtime = sys.argv[8]
+prev_mtime = sys.argv[9]
 
 STATUS_MAP = {
     "active":   ("bolt.fill",                   sf_green),
@@ -72,6 +65,7 @@ STATUS_MAP = {
 STATUS_LABEL = {"active": "Running", "pending": "Needs input", "idle": "Idle"}
 
 def check_pending_tool(transcript):
+    """Parse transcript tail for unpaired tool_use."""
     if not transcript:
         return False
     pending = False
@@ -107,15 +101,17 @@ def check_pending_tool(transcript):
         pass
     return pending
 
-# Determine status
-if not transcript:
-    status = "active"
-elif file_age < 5:
-    status = "active"
-elif check_pending_tool(transcript):
-    status = "pending"
-else:
-    status = "idle"
+def determine_status(transcript, mtime, prev_mtime):
+    """Determine status via mtime delta between cache cycles."""
+    if not transcript:
+        return "active"
+    if mtime != prev_mtime:
+        return "active"
+    if check_pending_tool(transcript):
+        return "pending"
+    return "idle"
+
+status = determine_status(transcript, mtime, prev_mtime)
 
 click = f"bash={helper} param1={tty} terminal=false"
 project = os.path.basename(cwd) if cwd else ""

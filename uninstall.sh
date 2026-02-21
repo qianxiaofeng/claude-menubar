@@ -34,23 +34,19 @@ with open(path) as f:
     cfg = json.load(f)
 
 hooks = cfg.get('hooks', {})
-matchers = hooks.get('SessionStart', [])
 
-# Remove matchers that reference session-track.sh
-filtered = []
-for m in matchers:
-    keep = True
-    for h in m.get('hooks', []):
-        if h.get('command', '').endswith('session-track.sh'):
-            keep = False
-            break
-    if keep:
-        filtered.append(m)
+# Scripts to remove across all event types
+remove_scripts = ('session-track.sh', 'update-status.sh')
 
-if not filtered:
-    hooks.pop('SessionStart', None)
-else:
-    hooks['SessionStart'] = filtered
+for event in list(hooks.keys()):
+    matchers = hooks[event]
+    filtered = [m for m in matchers
+                if not any(any(s in h.get('command', '') for s in remove_scripts)
+                           for h in m.get('hooks', []))]
+    if not filtered:
+        hooks.pop(event)
+    else:
+        hooks[event] = filtered
 
 if not hooks:
     cfg.pop('hooks', None)
@@ -59,7 +55,7 @@ with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
 "
-    echo "Removed SessionStart hook config from settings"
+    echo "Removed hook config from settings"
 fi
 
 # Clean up swiftbar state files
