@@ -1,29 +1,33 @@
 #!/bin/bash
-# Remove all ClaudeBar symlinks from the SwiftBar plugins directory.
+# Uninstall claude-bar: stop daemon, remove plugin, clean up hooks and state.
 
 set -euo pipefail
 
+# 1. Stop daemon
+PLIST_LABEL="com.claude.swiftbar-daemon"
+PLIST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+
+launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
+rm -f "$PLIST"
+echo "Stopped and removed daemon: $PLIST_LABEL"
+
+# 2. Remove SwiftBar plugins
 PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || {
-    echo "Error: Could not read SwiftBar plugin directory."
-    echo "Is SwiftBar installed and configured?"
-    exit 1
+    echo "Warning: Could not read SwiftBar plugin directory."
+    PLUGIN_DIR=""
 }
 
-# Expand ~ if present
-PLUGIN_DIR="${PLUGIN_DIR/#\~/$HOME}"
-
-if [[ ! -d "$PLUGIN_DIR" ]]; then
-    echo "Error: Plugin directory does not exist: $PLUGIN_DIR"
-    exit 1
+if [[ -n "$PLUGIN_DIR" ]]; then
+    PLUGIN_DIR="${PLUGIN_DIR/#\~/$HOME}"
+    # Remove new format
+    rm -fv "$PLUGIN_DIR"/ClaudeBar.2s.sh
+    # Remove old formats
+    rm -fv "$PLUGIN_DIR"/ClaudeBar.*.sh
+    rm -fv "$PLUGIN_DIR"/ClaudeBar-*.sh
+    echo "Removed SwiftBar plugins from $PLUGIN_DIR"
 fi
 
-# Remove new format (ClaudeBar-N.2s.sh)
-rm -fv "$PLUGIN_DIR"/ClaudeBar-*.sh
-
-# Remove old format (ClaudeBar.2s.sh)
-rm -fv "$PLUGIN_DIR"/ClaudeBar.*.sh
-
-# Remove hook config from settings.json
+# 3. Remove hook config from settings.json
 SETTINGS="$HOME/.claude/settings.json"
 if [[ -f "$SETTINGS" ]]; then
     python3 -c "
@@ -35,13 +39,13 @@ with open(path) as f:
 
 hooks = cfg.get('hooks', {})
 
-# Scripts to remove across all event types
-remove_scripts = ('session-track.sh', 'update-status.sh')
+# Scripts/commands to remove across all event types
+remove_patterns = ('session-track.sh', 'update-status.sh', 'claude-bar')
 
 for event in list(hooks.keys()):
     matchers = hooks[event]
     filtered = [m for m in matchers
-                if not any(any(s in h.get('command', '') for s in remove_scripts)
+                if not any(any(s in h.get('command', '') for s in remove_patterns)
                            for h in m.get('hooks', []))]
     if not filtered:
         hooks.pop(event)
@@ -58,7 +62,9 @@ with open(path, 'w') as f:
     echo "Removed hook config from settings"
 fi
 
-# Clean up swiftbar state files
+# 4. Clean up socket and state files
+rm -f "$HOME/.claude/swiftbar.sock"
 rm -rf "$HOME/.claude/swiftbar"
+echo "Cleaned up state files"
 
-echo "Uninstalled all ClaudeBar plugins from $PLUGIN_DIR"
+echo "Uninstallation complete."
