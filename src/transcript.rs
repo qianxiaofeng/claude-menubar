@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn test_resolve_state_file_valid() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn test_resolve_state_file_missing() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn test_resolve_state_file_stale() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn test_resolve_no_transcripts() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn test_resolve_two_sessions_both_valid() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn test_resolve_one_stale_does_not_steal() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn test_resolve_dead_session_ignored() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn test_resolve_corrupt_state_file() {
         let tmp = TempDir::new().unwrap();
-        let state_dir = tmp.path().join("swiftbar");
+        let state_dir = tmp.path().join("claude-bar");
         let project_dir = tmp.path().join("project");
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
@@ -968,7 +968,7 @@ mod tests {
         let active: std::collections::HashSet<String> = ["ttys000".into()].into();
         let result = resolve_transcript(
             "ttys000",
-            Path::new("/nonexistent/swiftbar"),
+            Path::new("/nonexistent/claude-bar"),
             &project_dir,
             &active,
         );

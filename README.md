@@ -56,7 +56,7 @@ Sessions are auto-discovered — no manual configuration needed.
    This will:
    - Build the Rust binary (`cargo build --release`)
    - Build the Swift menu bar app (`swiftc`)
-   - Start a launchd daemon (`com.claude.swiftbar-daemon`)
+   - Start a launchd daemon (`com.claude.claude-bar-daemon`)
    - Register a `SessionStart` hook in `~/.claude/settings.json`
 
 3. The icon appears automatically when Claude Code sessions are running.

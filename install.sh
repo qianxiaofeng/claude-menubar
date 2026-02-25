@@ -27,7 +27,7 @@ if [[ ! -x "$APP_BINARY" ]]; then
 fi
 
 # 3. Daemon (launchd plist) — runs the Swift menu bar app
-PLIST_LABEL="com.claude.swiftbar-daemon"
+PLIST_LABEL="com.claude.claude-bar-daemon"
 PLIST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
 # Stop existing daemon if running

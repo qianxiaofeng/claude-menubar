@@ -64,12 +64,12 @@ pub fn poll_sessions() -> Vec<SessionInfo> {
     sessions
 }
 
-/// Find the .swiftbar state directory for a given project CWD.
+/// Find the .claude-bar state directory for a given project CWD.
 fn find_state_dir(cwd: &str) -> PathBuf {
     if cwd.is_empty() {
-        return PathBuf::from("/tmp/.swiftbar");
+        return PathBuf::from("/tmp/.claude-bar");
     }
-    PathBuf::from(cwd).join(".swiftbar")
+    PathBuf::from(cwd).join(".claude-bar")
 }
 
 #[cfg(test)]
@@ -80,8 +80,8 @@ mod tests {
     fn test_find_state_dir() {
         assert_eq!(
             find_state_dir("/Users/test/project"),
-            PathBuf::from("/Users/test/project/.swiftbar")
+            PathBuf::from("/Users/test/project/.claude-bar")
         );
-        assert_eq!(find_state_dir(""), PathBuf::from("/tmp/.swiftbar"));
+        assert_eq!(find_state_dir(""), PathBuf::from("/tmp/.claude-bar"));
     }
 }

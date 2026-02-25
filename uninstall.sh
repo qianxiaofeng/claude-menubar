@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # 1. Stop daemon
-PLIST_LABEL="com.claude.swiftbar-daemon"
+PLIST_LABEL="com.claude.claude-bar-daemon"
 PLIST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
 launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
@@ -47,8 +47,8 @@ with open(path, 'w') as f:
 fi
 
 # 3. Clean up state files
-rm -f "$HOME/.claude/swiftbar.sock"
-rm -rf "$HOME/.claude/swiftbar"
+rm -f "$HOME/.claude/claude-bar.sock"
+rm -rf "$HOME/.claude/claude-bar"
 echo "Cleaned up state files"
 
 echo "Uninstallation complete."

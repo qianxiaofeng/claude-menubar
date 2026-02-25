@@ -28,15 +28,15 @@ pub fn run_hook() -> Result<(), Box<dyn std::error::Error>> {
     let tty_short = tty.trim_start_matches("/dev/");
 
     // Determine CWD from the claude process to find the right state dir
-    // The state dir is <project>/.swiftbar/
+    // The state dir is <project>/.claude-bar/
     // We derive it from the transcript path (which is under ~/.claude/projects/<hash>/)
     let cwd = find_project_cwd_from_transcript(&transcript_path);
     let state_dir = if cwd.is_empty() {
         // Fallback: use a default location
         let home = std::env::var("HOME").unwrap_or_default();
-        Path::new(&home).join(".claude/swiftbar")
+        Path::new(&home).join(".claude/claude-bar")
     } else {
-        Path::new(&cwd).join(".swiftbar")
+        Path::new(&cwd).join(".claude-bar")
     };
 
     fs::create_dir_all(&state_dir)?;

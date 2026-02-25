@@ -5,8 +5,8 @@
 /target/
 Cargo.lock
 
-# SwiftBar
-.swiftbar/
+# Runtime state
+.claude-bar/
 
 # Editor
 *.swp
