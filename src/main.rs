@@ -1,6 +1,6 @@
-mod display;
 mod focus;
 mod hook;
+#[cfg(test)]
 mod icon;
 mod process;
 mod serve;
@@ -11,7 +11,7 @@ mod transcript;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "claude-bar", about = "Claude Code session status for SwiftBar")]
+#[command(name = "claude-bar", about = "Claude Code session status for macOS menu bar")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -19,10 +19,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the daemon: poll sessions every 2s, serve state via Unix socket
-    Serve,
-    /// SwiftBar plugin: connect to daemon, render dot grid + dropdown
-    Display,
+    /// Poll sessions once and output JSON to stdout
+    Poll,
     /// SessionStart hook: read stdin JSON, write session state file
     Hook,
     /// Focus a terminal window
@@ -43,8 +41,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Serve => serve::run_serve(),
-        Commands::Display => display::run_display(),
+        Commands::Poll => run_poll(),
         Commands::Hook => hook::run_hook(),
         Commands::Focus { terminal, tty, cwd } => focus::run_focus(&terminal, &tty, &cwd),
     };
@@ -53,4 +50,11 @@ fn main() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
+}
+
+fn run_poll() -> Result<(), Box<dyn std::error::Error>> {
+    let sessions = serve::poll_sessions();
+    let json = serde_json::to_string(&sessions)?;
+    println!("{}", json);
+    Ok(())
 }

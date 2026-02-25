@@ -138,6 +138,7 @@ pub fn find_claude_ancestor(start_pid: u32) -> Option<(u32, String)> {
 
 /// Testable version: walk up process tree using provided output.
 /// `lookup` maps PID -> (comm, ppid, tty)
+#[cfg(test)]
 pub fn find_claude_in_tree(
     start_pid: u32,
     lookup: &HashMap<u32, (String, u32, Option<String>)>,

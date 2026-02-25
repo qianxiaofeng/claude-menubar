@@ -1,5 +1,5 @@
 #!/bin/bash
-# Uninstall claude-bar: stop daemon, remove plugin, clean up hooks and state.
+# Uninstall claude-bar: stop daemon, clean up hooks and state.
 
 set -euo pipefail
 
@@ -11,23 +11,7 @@ launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
 rm -f "$PLIST"
 echo "Stopped and removed daemon: $PLIST_LABEL"
 
-# 2. Remove SwiftBar plugins
-PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || {
-    echo "Warning: Could not read SwiftBar plugin directory."
-    PLUGIN_DIR=""
-}
-
-if [[ -n "$PLUGIN_DIR" ]]; then
-    PLUGIN_DIR="${PLUGIN_DIR/#\~/$HOME}"
-    # Remove new format
-    rm -fv "$PLUGIN_DIR"/ClaudeBar.2s.sh
-    # Remove old formats
-    rm -fv "$PLUGIN_DIR"/ClaudeBar.*.sh
-    rm -fv "$PLUGIN_DIR"/ClaudeBar-*.sh
-    echo "Removed SwiftBar plugins from $PLUGIN_DIR"
-fi
-
-# 3. Remove hook config from settings.json
+# 2. Remove hook config from settings.json
 SETTINGS="$HOME/.claude/settings.json"
 if [[ -f "$SETTINGS" ]]; then
     python3 -c "
@@ -62,7 +46,7 @@ with open(path, 'w') as f:
     echo "Removed hook config from settings"
 fi
 
-# 4. Clean up socket and state files
+# 3. Clean up state files
 rm -f "$HOME/.claude/swiftbar.sock"
 rm -rf "$HOME/.claude/swiftbar"
 echo "Cleaned up state files"

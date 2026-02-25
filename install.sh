@@ -1,13 +1,13 @@
 #!/bin/bash
-# Install claude-bar: build binary, create SwiftBar plugin, start daemon, register hook.
+# Install claude-bar: build Rust binary + Swift app, start daemon, register hook.
 # Usage: ./install.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 1. Build
-echo "Building claude-bar..."
+# 1. Build Rust binary
+echo "Building claude-bar (Rust)..."
 cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 BINARY="$SCRIPT_DIR/target/release/claude-bar"
 
@@ -16,46 +16,17 @@ if [[ ! -x "$BINARY" ]]; then
     exit 1
 fi
 
-# 2. SwiftBar plugin (single file, replaces old multi-slot approach)
-PLUGIN_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null) || {
-    echo "Error: Could not read SwiftBar plugin directory."
-    echo "Is SwiftBar installed and configured?"
-    exit 1
-}
-PLUGIN_DIR="${PLUGIN_DIR/#\~/$HOME}"
+# 2. Build Swift menu bar app
+echo "Building claude-bar-app (Swift)..."
+swiftc -O -o "$SCRIPT_DIR/target/release/claude-bar-app" "$SCRIPT_DIR/swift/ClaudeBar.swift"
+APP_BINARY="$SCRIPT_DIR/target/release/claude-bar-app"
 
-if [[ ! -d "$PLUGIN_DIR" ]]; then
-    echo "Error: Plugin directory does not exist: $PLUGIN_DIR"
+if [[ ! -x "$APP_BINARY" ]]; then
+    echo "Error: Swift build failed"
     exit 1
 fi
 
-# Warn if repo is inside plugin dir without dot-prefix
-case "$SCRIPT_DIR" in
-    "$PLUGIN_DIR"/[!.]*)
-        echo "Warning: This repo is inside the SwiftBar plugin directory without a dot-prefix."
-        echo "SwiftBar will try to execute all files. Rename the directory to start with '.':"
-        echo "  mv \"$SCRIPT_DIR\" \"$PLUGIN_DIR/.$(basename "$SCRIPT_DIR")\""
-        exit 1
-        ;;
-esac
-
-# Clean up old formats (multi-slot symlinks, cache plugin)
-rm -f "$PLUGIN_DIR"/ClaudeBar.*.sh
-rm -f "$PLUGIN_DIR"/ClaudeBar-*.sh
-
-# Create single SwiftBar plugin wrapper
-cat > "$PLUGIN_DIR/ClaudeBar.2s.sh" << EOF
-#!/bin/sh
-# <swiftbar.hideAbout>true</swiftbar.hideAbout>
-# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
-# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
-exec "$BINARY" display
-EOF
-chmod +x "$PLUGIN_DIR/ClaudeBar.2s.sh"
-
-echo "Installed SwiftBar plugin: $PLUGIN_DIR/ClaudeBar.2s.sh"
-
-# 3. Daemon (launchd plist)
+# 3. Daemon (launchd plist) — runs the Swift menu bar app
 PLIST_LABEL="com.claude.swiftbar-daemon"
 PLIST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
@@ -71,8 +42,7 @@ cat > "$PLIST" << EOF
     <string>$PLIST_LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$BINARY</string>
-        <string>serve</string>
+        <string>$APP_BINARY</string>
     </array>
     <key>KeepAlive</key>
     <true/>

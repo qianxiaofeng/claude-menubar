@@ -79,21 +79,24 @@ fn make_dot_grid_png(statuses: &[Status]) -> Vec<u8> {
         let color = status.color();
         let r = DOT_DIAMETER as f32 / 2.0;
 
-        let x_start = cx.saturating_sub(DOT_DIAMETER / 2);
-        let x_end = (cx + DOT_DIAMETER / 2).min(width);
-        let y_start = cy.saturating_sub(DOT_DIAMETER / 2);
-        let y_end = (cy + DOT_DIAMETER / 2).min(height);
+        let x_start = cx.saturating_sub(DOT_DIAMETER / 2 + 1);
+        let x_end = (cx + DOT_DIAMETER / 2 + 2).min(width);
+        let y_start = cy.saturating_sub(DOT_DIAMETER / 2 + 1);
+        let y_end = (cy + DOT_DIAMETER / 2 + 2).min(height);
 
         for py in y_start..y_end {
             for px in x_start..x_end {
                 let dx = px as f32 - cx as f32 + 0.5;
                 let dy = py as f32 - cy as f32 + 0.5;
-                if dx * dx + dy * dy <= r * r {
+                let dist = (dx * dx + dy * dy).sqrt();
+                let alpha = (r - dist + 0.5).clamp(0.0, 1.0);
+                if alpha > 0.0 {
                     let offset = ((py * width + px) * 4) as usize;
+                    let a = (alpha * color[3] as f32) as u8;
                     pixels[offset] = color[0];
                     pixels[offset + 1] = color[1];
                     pixels[offset + 2] = color[2];
-                    pixels[offset + 3] = color[3];
+                    pixels[offset + 3] = a;
                 }
             }
         }

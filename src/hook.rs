@@ -1,6 +1,5 @@
 use crate::process;
 use crate::state::SessionState;
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -66,17 +65,19 @@ fn find_project_cwd_from_transcript(_transcript_path: &str) -> String {
     String::new()
 }
 
-/// Testable version: find claude in a mock process tree and return the TTY.
-pub fn find_tty_from_tree(
-    start_pid: u32,
-    lookup: &HashMap<u32, (String, u32, Option<String>)>,
-) -> Option<String> {
-    process::find_claude_in_tree(start_pid, lookup).map(|(_, tty)| tty)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process;
+    use std::collections::HashMap;
+
+    /// Testable version: find claude in a mock process tree and return the TTY.
+    fn find_tty_from_tree(
+        start_pid: u32,
+        lookup: &HashMap<u32, (String, u32, Option<String>)>,
+    ) -> Option<String> {
+        process::find_claude_in_tree(start_pid, lookup).map(|(_, tty)| tty)
+    }
 
     #[test]
     fn test_parse_hook_stdin() {

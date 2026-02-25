@@ -5,18 +5,19 @@ use std::path::Path;
 use std::time::SystemTime;
 
 /// Parse the tail of a transcript JSONL file.
-/// Returns (last_role, has_pending_tool).
+/// Returns (last_role, has_pending_tool, in_plan_mode).
 ///
 /// last_role: "user" | "assistant" | None
 /// has_pending_tool: true if last assistant message has unpaired tool_use
-pub fn parse_transcript_tail(path: &str) -> (Option<String>, bool) {
+/// in_plan_mode: true if EnterPlanMode completed but ExitPlanMode has not
+pub fn parse_transcript_tail(path: &str) -> (Option<String>, bool, bool) {
     if path.is_empty() {
-        return (None, false);
+        return (None, false, false);
     }
 
     let content = match read_tail(path, 65536) {
         Some(c) => c,
-        None => return (None, false),
+        None => return (None, false, false),
     };
 
     parse_transcript_content(&content)
@@ -36,10 +37,15 @@ fn read_tail(path: &str, max_bytes: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).to_string())
 }
 
-/// Parse transcript content (JSONL lines) and determine last_role + pending state.
-pub fn parse_transcript_content(content: &str) -> (Option<String>, bool) {
+/// Parse transcript content (JSONL lines) and determine last_role + pending + plan mode state.
+///
+/// Returns (last_role, has_pending_tool, in_plan_mode).
+/// in_plan_mode: true if EnterPlanMode completed but ExitPlanMode has not.
+pub fn parse_transcript_content(content: &str) -> (Option<String>, bool, bool) {
     let mut last_role: Option<String> = None;
     let mut pending = false;
+    let mut in_plan_mode = false;
+    let mut last_assistant_tool_names: Vec<String> = Vec::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -58,12 +64,22 @@ pub fn parse_transcript_content(content: &str) -> (Option<String>, bool) {
 
         if entry_type == "assistant" && role == "assistant" {
             last_role = Some("assistant".to_string());
+            last_assistant_tool_names.clear();
             if let Some(items) = content_arr {
                 let types: Vec<&str> = items
                     .iter()
                     .filter_map(|c| c.get("type").and_then(|v| v.as_str()))
                     .collect();
                 pending = types.contains(&"tool_use");
+
+                // Track tool names for plan mode detection
+                for item in items {
+                    if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                            last_assistant_tool_names.push(name.to_string());
+                        }
+                    }
+                }
             }
         } else if entry_type == "user" && role == "user" {
             last_role = Some("user".to_string());
@@ -74,12 +90,33 @@ pub fn parse_transcript_content(content: &str) -> (Option<String>, bool) {
                     .collect();
                 if types.contains(&"tool_result") {
                     pending = false;
+
+                    // Check if completed tool is plan mode related
+                    for name in &last_assistant_tool_names {
+                        match name.as_str() {
+                            "EnterPlanMode" => {
+                                in_plan_mode = true;
+                            }
+                            "ExitPlanMode" => {
+                                let is_error = items.iter().any(|c| {
+                                    c.get("is_error")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false)
+                                });
+                                if !is_error {
+                                    in_plan_mode = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    last_assistant_tool_names.clear();
                 }
             }
         }
     }
 
-    (last_role, pending)
+    (last_role, pending, in_plan_mode)
 }
 
 /// Get file mtime age in seconds (how long ago it was modified).
@@ -102,12 +139,16 @@ pub fn determine_status(transcript: Option<&str>) -> Status {
         None => return Status::Active,
     };
 
-    let (last_role, pending) = parse_transcript_tail(transcript);
+    let (last_role, pending, in_plan_mode) = parse_transcript_tail(transcript);
 
     // Pending: tool_use waiting for user action
     // 3s grace period filters auto-approved tools (complete in <2s)
     // 120s timeout degrades to idle (session likely abandoned)
+    // In plan mode, no timeout (user may review plan for a long time)
     if pending && age >= 3.0 {
+        if in_plan_mode {
+            return Status::Pending;
+        }
         return if age < 120.0 {
             Status::Pending
         } else {
@@ -129,11 +170,18 @@ pub fn determine_status(transcript: Option<&str>) -> Status {
         };
     }
 
+    // In plan mode, show pending instead of idle
+    // (Claude is waiting for user input within a planning session)
+    if in_plan_mode {
+        return Status::Pending;
+    }
+
     // Assistant finished -> idle
     Status::Idle
 }
 
 /// Testable version of determine_status that takes age as parameter.
+#[cfg(test)]
 pub fn determine_status_with_age(
     transcript_content: Option<&str>,
     age: Option<f64>,
@@ -143,12 +191,15 @@ pub fn determine_status_with_age(
         None => return Status::Active,
     };
 
-    let (last_role, pending) = match transcript_content {
+    let (last_role, pending, in_plan_mode) = match transcript_content {
         Some(content) if !content.is_empty() => parse_transcript_content(content),
-        _ => (None, false),
+        _ => (None, false, false),
     };
 
     if pending && age >= 3.0 {
+        if in_plan_mode {
+            return Status::Pending;
+        }
         return if age < 120.0 {
             Status::Pending
         } else {
@@ -166,6 +217,10 @@ pub fn determine_status_with_age(
         } else {
             Status::Idle
         };
+    }
+
+    if in_plan_mode {
+        return Status::Pending;
     }
 
     Status::Idle
@@ -284,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_empty_content() {
-        assert_eq!(parse_transcript_content(""), (None, false));
+        assert_eq!(parse_transcript_content(""), (None, false, false));
     }
 
     #[test]
@@ -292,7 +347,7 @@ mod tests {
         let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}"#;
         assert_eq!(
             parse_transcript_content(content),
-            (Some("assistant".into()), false)
+            (Some("assistant".into()), false, false)
         );
     }
 
@@ -301,7 +356,7 @@ mod tests {
         let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"Done"}]}}"#;
         assert_eq!(
             parse_transcript_content(content),
-            (Some("assistant".into()), false)
+            (Some("assistant".into()), false, false)
         );
     }
 
@@ -310,7 +365,7 @@ mod tests {
         let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}"#;
         assert_eq!(
             parse_transcript_content(content),
-            (Some("assistant".into()), true)
+            (Some("assistant".into()), true, false)
         );
     }
 
@@ -321,7 +376,7 @@ mod tests {
         let content = format!("{}\n{}", line1, line2);
         assert_eq!(
             parse_transcript_content(&content),
-            (Some("user".into()), false)
+            (Some("user".into()), false, false)
         );
     }
 
@@ -335,7 +390,7 @@ mod tests {
         let content = lines.join("\n");
         assert_eq!(
             parse_transcript_content(&content),
-            (Some("assistant".into()), true)
+            (Some("assistant".into()), true, false)
         );
     }
 
@@ -349,7 +404,7 @@ mod tests {
         let content = lines.join("\n");
         assert_eq!(
             parse_transcript_content(&content),
-            (Some("assistant".into()), false)
+            (Some("assistant".into()), false, false)
         );
     }
 
@@ -362,7 +417,7 @@ mod tests {
         let content = lines.join("\n");
         assert_eq!(
             parse_transcript_content(&content),
-            (Some("user".into()), false)
+            (Some("user".into()), false, false)
         );
     }
 
@@ -375,7 +430,7 @@ mod tests {
         let content = lines.join("\n");
         assert_eq!(
             parse_transcript_content(&content),
-            (Some("assistant".into()), false)
+            (Some("assistant".into()), false, false)
         );
     }
 
@@ -384,7 +439,137 @@ mod tests {
         let content = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]}}"#;
         assert_eq!(
             parse_transcript_content(content),
-            (Some("user".into()), false)
+            (Some("user".into()), false, false)
+        );
+    }
+
+    // ─── plan mode detection tests ───
+
+    #[test]
+    fn test_enter_plan_mode_pending() {
+        // EnterPlanMode called but not completed yet
+        let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#;
+        assert_eq!(
+            parse_transcript_content(content),
+            (Some("assistant".into()), true, false)
+        );
+    }
+
+    #[test]
+    fn test_enter_plan_mode_completed() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+        ];
+        let content = lines.join("\n");
+        assert_eq!(
+            parse_transcript_content(&content),
+            (Some("user".into()), false, true)
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_with_research() {
+        // In plan mode, Claude does research, then writes text
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Read","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"file contents"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is my plan..."}]}}"#,
+        ];
+        let content = lines.join("\n");
+        assert_eq!(
+            parse_transcript_content(&content),
+            (Some("assistant".into()), false, true)
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_exit_pending() {
+        // ExitPlanMode called but not completed yet
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"ExitPlanMode","input":{}}]}}"#,
+        ];
+        let content = lines.join("\n");
+        assert_eq!(
+            parse_transcript_content(&content),
+            (Some("assistant".into()), true, true)
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_exit_completed() {
+        // ExitPlanMode completed -> no longer in plan mode
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"ExitPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"Plan approved."}]}}"#,
+        ];
+        let content = lines.join("\n");
+        assert_eq!(
+            parse_transcript_content(&content),
+            (Some("user".into()), false, false)
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_exit_rejected() {
+        // ExitPlanMode rejected -> still in plan mode
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"ExitPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"Rejected.","is_error":true}]}}"#,
+        ];
+        let content = lines.join("\n");
+        assert_eq!(
+            parse_transcript_content(&content),
+            (Some("user".into()), false, true)
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_status_pending_not_idle() {
+        // In plan mode, text-only assistant -> should be pending, not idle
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is my plan..."}]}}"#,
+        ];
+        let content = lines.join("\n");
+        assert_eq!(
+            determine_status_with_age(Some(&content), Some(30.0)),
+            Status::Pending
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_pending_no_timeout() {
+        // In plan mode, pending tool_use should not timeout at 120s
+        let lines = vec![
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"EnterPlanMode","input":{}}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"Entered plan mode."}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"ExitPlanMode","input":{}}]}}"#,
+        ];
+        let content = lines.join("\n");
+        // Even at 200s, should stay pending in plan mode
+        assert_eq!(
+            determine_status_with_age(Some(&content), Some(200.0)),
+            Status::Pending
+        );
+    }
+
+    #[test]
+    fn test_not_plan_mode_still_times_out() {
+        // Not in plan mode, pending tool_use should still timeout at 120s
+        let content = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}"#;
+        assert_eq!(
+            determine_status_with_age(Some(content), Some(200.0)),
+            Status::Idle
         );
     }
 

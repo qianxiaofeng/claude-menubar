@@ -20,14 +20,7 @@ impl fmt::Display for Status {
 }
 
 impl Status {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Status::Active => "Running",
-            Status::Pending => "Needs input",
-            Status::Idle => "Idle",
-        }
-    }
-
+    #[cfg(test)]
     pub fn index(&self) -> u8 {
         match self {
             Status::Active => 0,
@@ -36,6 +29,7 @@ impl Status {
         }
     }
 
+    #[cfg(test)]
     pub fn from_index(i: u8) -> Option<Self> {
         match i {
             0 => Some(Status::Active),
@@ -74,6 +68,7 @@ pub struct SessionInfo {
     pub status: Status,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayResponse {
     pub sessions: Vec<SessionInfo>,
