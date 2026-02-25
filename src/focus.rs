@@ -61,6 +61,7 @@ pub fn run_focus(
     match terminal {
         "iterm2" => focus_iterm2(tty),
         "alacritty" => focus_alacritty(cwd),
+        "unknown" => Ok(()),
         other => Err(format!("Unknown terminal: {}", other).into()),
     }
 }

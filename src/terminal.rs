@@ -85,6 +85,18 @@ pub fn merge_sessions(
         result.push((tty, Terminal::Alacritty));
     }
 
+    // Fallback: TTYs in pid_by_tty not claimed by any terminal (e.g. tmux/zellij PTYs)
+    let mut unclaimed: Vec<_> = pid_by_tty
+        .keys()
+        .filter(|tty| !seen.contains(*tty))
+        .cloned()
+        .collect();
+    unclaimed.sort();
+
+    for tty in unclaimed {
+        result.push((tty, Terminal::Unknown));
+    }
+
     result
 }
 
@@ -198,6 +210,46 @@ mod tests {
 
         let result = merge_sessions(&iterm, &alacritty, &pid_by_tty);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_merge_unclaimed_fallback() {
+        // TTYs in pid_by_tty but not in any terminal list → Terminal::Unknown
+        let iterm = vec!["/dev/ttys000".into()];
+        let alacritty: Vec<String> = vec![];
+        let mut pid_by_tty = HashMap::new();
+        pid_by_tty.insert("/dev/ttys000".into(), 100);
+        pid_by_tty.insert("/dev/ttys003".into(), 300); // zellij PTY
+        pid_by_tty.insert("/dev/ttys005".into(), 500); // tmux PTY
+
+        let result = merge_sessions(&iterm, &alacritty, &pid_by_tty);
+        assert_eq!(
+            result,
+            vec![
+                ("/dev/ttys000".into(), Terminal::ITerm2),
+                ("/dev/ttys003".into(), Terminal::Unknown),
+                ("/dev/ttys005".into(), Terminal::Unknown),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_all_unclaimed() {
+        // No terminals detected at all → all sessions are Unknown
+        let iterm: Vec<String> = vec![];
+        let alacritty: Vec<String> = vec![];
+        let mut pid_by_tty = HashMap::new();
+        pid_by_tty.insert("/dev/ttys002".into(), 200);
+        pid_by_tty.insert("/dev/ttys001".into(), 100);
+
+        let result = merge_sessions(&iterm, &alacritty, &pid_by_tty);
+        assert_eq!(
+            result,
+            vec![
+                ("/dev/ttys001".into(), Terminal::Unknown),
+                ("/dev/ttys002".into(), Terminal::Unknown),
+            ]
+        );
     }
 
     #[test]

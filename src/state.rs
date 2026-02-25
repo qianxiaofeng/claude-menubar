@@ -51,6 +51,7 @@ impl Status {
 pub enum Terminal {
     ITerm2,
     Alacritty,
+    Unknown,
 }
 
 impl fmt::Display for Terminal {
@@ -58,6 +59,7 @@ impl fmt::Display for Terminal {
         match self {
             Terminal::ITerm2 => write!(f, "iterm2"),
             Terminal::Alacritty => write!(f, "alacritty"),
+            Terminal::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -174,5 +176,6 @@ mod tests {
     fn test_terminal_display() {
         assert_eq!(format!("{}", Terminal::ITerm2), "iterm2");
         assert_eq!(format!("{}", Terminal::Alacritty), "alacritty");
+        assert_eq!(format!("{}", Terminal::Unknown), "unknown");
     }
 }
