@@ -2,7 +2,6 @@ use crate::process;
 use crate::state::SessionState;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
 
 /// Parse the hook JSON input from stdin.
 pub fn parse_hook_input(input: &str) -> Option<(String, String)> {
@@ -27,23 +26,16 @@ pub fn run_hook() -> Result<(), Box<dyn std::error::Error>> {
 
     let tty_short = tty.trim_start_matches("/dev/");
 
-    // Determine CWD from the claude process to find the right state dir
-    // The state dir is <project>/.claude-bar/
-    // We derive it from the transcript path (which is under ~/.claude/projects/<hash>/)
+    // Determine CWD from the claude process to find the centralized state dir
     let cwd = find_project_cwd_from_transcript(&transcript_path);
-    let state_dir = if cwd.is_empty() {
-        // Fallback: use a default location
-        let home = std::env::var("HOME").unwrap_or_default();
-        Path::new(&home).join(".claude/claude-bar")
-    } else {
-        Path::new(&cwd).join(".claude-bar")
-    };
+    let state_dir = crate::transcript::state_dir_for_cwd(&cwd);
 
     fs::create_dir_all(&state_dir)?;
 
     let state = SessionState {
         session_id,
         transcript_path,
+        cwd,
     };
 
     let state_file = state_dir.join(format!("session-{}.json", tty_short));
@@ -129,6 +121,7 @@ mod tests {
         let state = SessionState {
             session_id: "test-123".into(),
             transcript_path: "/path/to/transcript.jsonl".into(),
+            cwd: "/some/project".into(),
         };
 
         let state_file = state_dir.join("session-ttys000.json");

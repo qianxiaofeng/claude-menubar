@@ -78,6 +78,8 @@ pub struct DisplayResponse {
 pub struct SessionState {
     pub session_id: String,
     pub transcript_path: String,
+    #[serde(default)]
+    pub cwd: String,
 }
 
 #[cfg(test)]
@@ -145,11 +147,21 @@ mod tests {
         let state = SessionState {
             session_id: "abc-123".into(),
             transcript_path: "/path/to/transcript.jsonl".into(),
+            cwd: "/some/project".into(),
         };
         let json = serde_json::to_string(&state).unwrap();
         let back: SessionState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.session_id, "abc-123");
         assert_eq!(back.transcript_path, state.transcript_path);
+    }
+
+    #[test]
+    fn test_session_state_backward_compat() {
+        // Old format without cwd field should deserialize with empty cwd
+        let json = r#"{"session_id":"old","transcript_path":"/t.jsonl"}"#;
+        let state: SessionState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.session_id, "old");
+        assert_eq!(state.cwd, "");
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::state::SessionInfo;
 use crate::terminal;
 use crate::transcript;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Poll all terminal sessions and determine their statuses.
 pub fn poll_sessions() -> Vec<SessionInfo> {
@@ -34,7 +34,7 @@ pub fn poll_sessions() -> Vec<SessionInfo> {
             .join(".claude/projects")
             .join(&project_hash);
 
-        let state_dir = find_state_dir(&cwd);
+        let state_dir = transcript::state_dir_for_cwd(&cwd);
 
         let transcript_path = transcript::resolve_transcript(
             tty_short,
@@ -64,24 +64,18 @@ pub fn poll_sessions() -> Vec<SessionInfo> {
     sessions
 }
 
-/// Find the .claude-bar state directory for a given project CWD.
-fn find_state_dir(cwd: &str) -> PathBuf {
-    if cwd.is_empty() {
-        return PathBuf::from("/tmp/.claude-bar");
-    }
-    PathBuf::from(cwd).join(".claude-bar")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_find_state_dir() {
+    fn test_state_dir_uses_centralized_path() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let expected = std::path::PathBuf::from(&home)
+            .join(".claude/claude-bar/-Users-test-project");
         assert_eq!(
-            find_state_dir("/Users/test/project"),
-            PathBuf::from("/Users/test/project/.claude-bar")
+            transcript::state_dir_for_cwd("/Users/test/project"),
+            expected
         );
-        assert_eq!(find_state_dir(""), PathBuf::from("/tmp/.claude-bar"));
     }
 }

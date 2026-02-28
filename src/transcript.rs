@@ -309,6 +309,17 @@ pub fn project_hash(cwd: &str) -> String {
     cwd.replace(['/', '_'], "-")
 }
 
+/// Return the centralized state directory for a given project CWD.
+/// State files are stored under `~/.claude/claude-bar/<project-hash>/`.
+pub fn state_dir_for_cwd(cwd: &str) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let base = std::path::PathBuf::from(&home).join(".claude").join("claude-bar");
+    if cwd.is_empty() {
+        return base;
+    }
+    base.join(project_hash(cwd))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,6 +758,7 @@ mod tests {
         let state = crate::state::SessionState {
             session_id: "aaa".into(),
             transcript_path: tp.clone(),
+            cwd: String::new(),
         };
         fs::write(
             state_dir.join("session-ttys000.json"),
@@ -790,6 +802,7 @@ mod tests {
         let state = crate::state::SessionState {
             session_id: "gone".into(),
             transcript_path: "/nonexistent/gone.jsonl".into(),
+            cwd: String::new(),
         };
         fs::write(
             state_dir.join("session-ttys000.json"),
@@ -831,10 +844,12 @@ mod tests {
         let state_a = crate::state::SessionState {
             session_id: "aaa".into(),
             transcript_path: tp_a.clone(),
+            cwd: String::new(),
         };
         let state_b = crate::state::SessionState {
             session_id: "bbb".into(),
             transcript_path: tp_b.clone(),
+            cwd: String::new(),
         };
         fs::write(
             state_dir.join("session-ttys000.json"),
@@ -875,10 +890,12 @@ mod tests {
         let state_a = crate::state::SessionState {
             session_id: "gone".into(),
             transcript_path: "/nonexistent/gone.jsonl".into(),
+            cwd: String::new(),
         };
         let state_b = crate::state::SessionState {
             session_id: "bbb".into(),
             transcript_path: tp_b.clone(),
+            cwd: String::new(),
         };
         fs::write(
             state_dir.join("session-ttys000.json"),
@@ -922,6 +939,7 @@ mod tests {
         let state_dead = crate::state::SessionState {
             session_id: "dead".into(),
             transcript_path: project_dir.join("dead.jsonl").to_string_lossy().to_string(),
+            cwd: String::new(),
         };
         fs::write(
             state_dir.join("session-ttys005.json"),
@@ -982,5 +1000,23 @@ mod tests {
             "-Users-test-my-project"
         );
         assert_eq!(project_hash("/a/b/c"), "-a-b-c");
+    }
+
+    #[test]
+    fn test_state_dir_for_cwd() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let base = format!("{}/.claude/claude-bar", home);
+
+        // Non-empty cwd -> base/project-hash
+        assert_eq!(
+            state_dir_for_cwd("/Users/test/my_project"),
+            std::path::PathBuf::from(&base).join("-Users-test-my-project")
+        );
+
+        // Empty cwd -> base directory itself
+        assert_eq!(
+            state_dir_for_cwd(""),
+            std::path::PathBuf::from(&base)
+        );
     }
 }

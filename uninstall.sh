@@ -50,5 +50,6 @@ fi
 rm -f "$HOME/.claude/claude-bar.sock"
 rm -rf "$HOME/.claude/claude-bar"
 echo "Cleaned up state files"
+echo "Note: You may remove any leftover .claude-bar/ directories from project folders"
 
 echo "Uninstallation complete."
