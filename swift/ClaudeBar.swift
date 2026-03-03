@@ -6,6 +6,7 @@ struct SessionInfo: Decodable {
     let tty: String
     let pid: UInt32
     let cwd: String
+    let provider: String?
     let terminal: String
     let transcript: String?
     let status: String

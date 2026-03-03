@@ -42,6 +42,22 @@ impl Status {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum Provider {
+    Claude,
+    Codex,
+}
+
+impl fmt::Display for Provider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Provider::Claude => write!(f, "claude"),
+            Provider::Codex => write!(f, "codex"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Terminal {
     ITerm2,
     Alacritty,
@@ -63,6 +79,7 @@ pub struct SessionInfo {
     pub tty: String,
     pub pid: u32,
     pub cwd: String,
+    pub provider: Provider,
     pub terminal: Terminal,
     pub transcript: Option<String>,
     pub status: Status,
@@ -101,6 +118,7 @@ mod tests {
             tty: "/dev/ttys000".into(),
             pid: 12345,
             cwd: "/Users/test/project".into(),
+            provider: Provider::Claude,
             terminal: Terminal::ITerm2,
             transcript: Some("/path/to/transcript.jsonl".into()),
             status: Status::Active,
@@ -110,6 +128,7 @@ mod tests {
         assert_eq!(back.tty, info.tty);
         assert_eq!(back.pid, info.pid);
         assert_eq!(back.status, Status::Active);
+        assert_eq!(back.provider, Provider::Claude);
         assert_eq!(back.terminal, Terminal::ITerm2);
     }
 
@@ -121,6 +140,7 @@ mod tests {
                     tty: "/dev/ttys000".into(),
                     pid: 100,
                     cwd: "/a".into(),
+                    provider: Provider::Claude,
                     terminal: Terminal::ITerm2,
                     transcript: None,
                     status: Status::Active,
@@ -129,6 +149,7 @@ mod tests {
                     tty: "/dev/ttys001".into(),
                     pid: 200,
                     cwd: "/b".into(),
+                    provider: Provider::Codex,
                     terminal: Terminal::Alacritty,
                     transcript: Some("/t.jsonl".into()),
                     status: Status::Idle,
@@ -184,5 +205,11 @@ mod tests {
         assert_eq!(format!("{}", Terminal::ITerm2), "iterm2");
         assert_eq!(format!("{}", Terminal::Alacritty), "alacritty");
         assert_eq!(format!("{}", Terminal::Unknown), "unknown");
+    }
+
+    #[test]
+    fn test_provider_display() {
+        assert_eq!(format!("{}", Provider::Claude), "claude");
+        assert_eq!(format!("{}", Provider::Codex), "codex");
     }
 }

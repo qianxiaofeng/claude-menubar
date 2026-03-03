@@ -1,7 +1,7 @@
-use crate::state::Status;
+use crate::state::{Provider, Status};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Parse the tail of a transcript JSONL file.
@@ -99,9 +99,7 @@ pub fn parse_transcript_content(content: &str) -> (Option<String>, bool, bool) {
                             }
                             "ExitPlanMode" => {
                                 let is_error = items.iter().any(|c| {
-                                    c.get("is_error")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false)
+                                    c.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
                                 });
                                 if !is_error {
                                     in_plan_mode = false;
@@ -180,12 +178,112 @@ pub fn determine_status(transcript: Option<&str>) -> Status {
     Status::Idle
 }
 
+/// Determine status for an agent provider using provider-specific transcript semantics.
+pub fn determine_status_for(provider: Provider, transcript: Option<&str>) -> Status {
+    match provider {
+        Provider::Claude => determine_status(transcript),
+        Provider::Codex => determine_codex_status(transcript),
+    }
+}
+
+/// Parse the tail of a Codex session JSONL file.
+/// Returns (has_pending_function_call, has_pending_escalation_call).
+pub fn parse_codex_tail(path: &str) -> (bool, bool) {
+    if path.is_empty() {
+        return (false, false);
+    }
+
+    let content = match read_tail(path, 65536) {
+        Some(c) => c,
+        None => return (false, false),
+    };
+    parse_codex_content(&content)
+}
+
+/// Parse Codex JSONL event content and compute pending tool-call state.
+pub fn parse_codex_content(content: &str) -> (bool, bool) {
+    let mut pending_calls: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let entry: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if entry.get("type").and_then(|v| v.as_str()) != Some("response_item") {
+            continue;
+        }
+
+        let payload = match entry.get("payload") {
+            Some(v) => v,
+            None => continue,
+        };
+        let payload_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        if payload_type == "function_call" {
+            let call_id = match payload.get("call_id").and_then(|v| v.as_str()) {
+                Some(v) if !v.is_empty() => v.to_string(),
+                _ => continue,
+            };
+            let is_escalated = payload
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .map(codex_is_escalation_request)
+                .unwrap_or(false);
+            pending_calls.insert(call_id, is_escalated);
+        } else if payload_type == "function_call_output" {
+            if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                pending_calls.remove(call_id);
+            }
+        }
+    }
+
+    let has_pending_call = !pending_calls.is_empty();
+    let has_pending_escalation = pending_calls.values().any(|v| *v);
+    (has_pending_call, has_pending_escalation)
+}
+
+fn codex_is_escalation_request(arguments: &str) -> bool {
+    let value: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(_) => return arguments.contains("\"sandbox_permissions\":\"require_escalated\""),
+    };
+    value.get("sandbox_permissions").and_then(|v| v.as_str()) == Some("require_escalated")
+}
+
+/// Determine status for a Codex session file.
+pub fn determine_codex_status(transcript: Option<&str>) -> Status {
+    let transcript = match transcript {
+        Some(t) if !t.is_empty() => t,
+        _ => return Status::Active,
+    };
+
+    let age = match get_mtime_age(transcript) {
+        Some(a) => a,
+        None => return Status::Active,
+    };
+
+    let (has_pending_call, has_pending_escalation) = parse_codex_tail(transcript);
+    if has_pending_escalation {
+        return Status::Pending;
+    }
+    if has_pending_call {
+        return Status::Active;
+    }
+    if age < 10.0 {
+        return Status::Active;
+    }
+    Status::Idle
+}
+
 /// Testable version of determine_status that takes age as parameter.
 #[cfg(test)]
-pub fn determine_status_with_age(
-    transcript_content: Option<&str>,
-    age: Option<f64>,
-) -> Status {
+pub fn determine_status_with_age(transcript_content: Option<&str>, age: Option<f64>) -> Status {
     let age = match age {
         Some(a) => a,
         None => return Status::Active,
@@ -242,8 +340,7 @@ pub fn resolve_transcript(
     if state_file.is_file() {
         if let Ok(content) = fs::read_to_string(&state_file) {
             if let Ok(state) = serde_json::from_str::<crate::state::SessionState>(&content) {
-                if !state.transcript_path.is_empty()
-                    && Path::new(&state.transcript_path).is_file()
+                if !state.transcript_path.is_empty() && Path::new(&state.transcript_path).is_file()
                 {
                     return state.transcript_path;
                 }
@@ -280,11 +377,7 @@ pub fn resolve_transcript(
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map_or(false, |ext| ext == "jsonl")
-        })
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
         .filter_map(|e| {
             let path = e.path().to_string_lossy().to_string();
             let mtime = e.metadata().ok()?.modified().ok()?;
@@ -304,6 +397,90 @@ pub fn resolve_transcript(
     String::new()
 }
 
+/// Find the most recently modified Codex session JSONL for a project CWD.
+pub fn find_latest_codex_session_for_cwd(cwd: &str) -> String {
+    let root = codex_sessions_root();
+    find_latest_codex_session_for_cwd_in(cwd, &root)
+}
+
+fn find_latest_codex_session_for_cwd_in(cwd: &str, root: &Path) -> String {
+    if cwd.is_empty() {
+        return String::new();
+    }
+
+    let mut candidates = Vec::new();
+    collect_jsonl_files(root, &mut candidates);
+    if candidates.is_empty() {
+        return String::new();
+    }
+
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    for (path, _) in candidates {
+        if codex_session_matches_cwd(&path, cwd) {
+            return path.to_string_lossy().to_string();
+        }
+    }
+    String::new()
+}
+
+fn codex_sessions_root() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".codex").join("sessions")
+}
+
+fn collect_jsonl_files(dir: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, out);
+            continue;
+        }
+        if path.extension().map_or(false, |ext| ext == "jsonl") {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    out.push((path, mtime));
+                }
+            }
+        }
+    }
+}
+
+fn codex_session_matches_cwd(path: &Path, cwd: &str) -> bool {
+    let file = match fs::File::open(path) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(20) {
+        let line = match line {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if entry.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
+            continue;
+        }
+        let session_cwd = entry
+            .get("payload")
+            .and_then(|v| v.get("cwd"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return session_cwd == cwd;
+    }
+    false
+}
+
 /// Compute project hash from CWD (replaces / and _ with -)
 pub fn project_hash(cwd: &str) -> String {
     cwd.replace(['/', '_'], "-")
@@ -313,7 +490,9 @@ pub fn project_hash(cwd: &str) -> String {
 /// State files are stored under `~/.claude/claude-bar/<project-hash>/`.
 pub fn state_dir_for_cwd(cwd: &str) -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
-    let base = std::path::PathBuf::from(&home).join(".claude").join("claude-bar");
+    let base = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("claude-bar");
     if cwd.is_empty() {
         return base;
     }
@@ -342,7 +521,8 @@ mod tests {
             .unwrap()
             .as_secs_f64()
             - seconds_ago;
-        let ft = filetime::FileTime::from_unix_time(t as i64, ((t.fract()) * 1_000_000_000.0) as u32);
+        let ft =
+            filetime::FileTime::from_unix_time(t as i64, ((t.fract()) * 1_000_000_000.0) as u32);
         filetime::set_file_mtime(path, ft).unwrap();
     }
 
@@ -780,10 +960,7 @@ mod tests {
         fs::create_dir_all(&project_dir).unwrap();
 
         make_transcript(&project_dir, "old", &[]);
-        set_mtime(
-            &project_dir.join("old.jsonl").to_string_lossy(),
-            10.0,
-        );
+        set_mtime(&project_dir.join("old.jsonl").to_string_lossy(), 10.0);
         let new_path = make_transcript(&project_dir, "new", &[]);
 
         let active: std::collections::HashSet<String> = ["ttys000".into()].into();
@@ -862,8 +1039,7 @@ mod tests {
         )
         .unwrap();
 
-        let active: std::collections::HashSet<String> =
-            ["ttys000".into(), "ttys009".into()].into();
+        let active: std::collections::HashSet<String> = ["ttys000".into(), "ttys009".into()].into();
         assert_eq!(
             resolve_transcript("ttys000", &state_dir, &project_dir, &active),
             tp_a
@@ -908,8 +1084,7 @@ mod tests {
         )
         .unwrap();
 
-        let active: std::collections::HashSet<String> =
-            ["ttys000".into(), "ttys009".into()].into();
+        let active: std::collections::HashSet<String> = ["ttys000".into(), "ttys009".into()].into();
         assert_eq!(
             resolve_transcript("ttys009", &state_dir, &project_dir, &active),
             tp_b
@@ -931,10 +1106,7 @@ mod tests {
 
         let tp_live = make_transcript(&project_dir, "live", &[]);
         make_transcript(&project_dir, "dead", &[]);
-        set_mtime(
-            &project_dir.join("dead.jsonl").to_string_lossy(),
-            5.0,
-        );
+        set_mtime(&project_dir.join("dead.jsonl").to_string_lossy(), 5.0);
 
         let state_dead = crate::state::SessionState {
             session_id: "dead".into(),
@@ -962,11 +1134,7 @@ mod tests {
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&project_dir).unwrap();
 
-        fs::write(
-            state_dir.join("session-ttys000.json"),
-            "NOT VALID JSON{{{",
-        )
-        .unwrap();
+        fs::write(state_dir.join("session-ttys000.json"), "NOT VALID JSON{{{").unwrap();
 
         let tp = make_transcript(&project_dir, "real", &[]);
         let active: std::collections::HashSet<String> = ["ttys000".into()].into();
@@ -994,6 +1162,72 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_codex_content_pending_call() {
+        let content = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_1","arguments":"{\"cmd\":\"ls\"}"}}"#;
+        assert_eq!(parse_codex_content(content), (true, false));
+    }
+
+    #[test]
+    fn test_parse_codex_content_pending_escalation() {
+        let content = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_1","arguments":"{\"cmd\":\"xcodebuild\",\"sandbox_permissions\":\"require_escalated\"}"}}"#;
+        assert_eq!(parse_codex_content(content), (true, true));
+    }
+
+    #[test]
+    fn test_parse_codex_content_paired_call() {
+        let content = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_1","arguments":"{\"cmd\":\"ls\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"ok"}}"#;
+        assert_eq!(parse_codex_content(content), (false, false));
+    }
+
+    #[test]
+    fn test_determine_codex_status_pending_escalation() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_1","arguments":"{\"sandbox_permissions\":\"require_escalated\"}"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            determine_codex_status(Some(&path.to_string_lossy())),
+            Status::Pending
+        );
+    }
+
+    #[test]
+    fn test_find_latest_codex_session_for_cwd_in() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("sessions");
+        fs::create_dir_all(root.join("2026/03/03")).unwrap();
+
+        let a = root.join("2026/03/03/a.jsonl");
+        let b = root.join("2026/03/03/b.jsonl");
+
+        fs::write(
+            &a,
+            r#"{"type":"session_meta","payload":{"cwd":"/Users/test/a"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &b,
+            r#"{"type":"session_meta","payload":{"cwd":"/Users/test/b"}}"#,
+        )
+        .unwrap();
+        set_mtime(&a.to_string_lossy(), 10.0);
+        set_mtime(&b.to_string_lossy(), 1.0);
+
+        assert_eq!(
+            find_latest_codex_session_for_cwd_in("/Users/test/b", &root),
+            b.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            find_latest_codex_session_for_cwd_in("/Users/test/missing", &root),
+            ""
+        );
+    }
+
+    #[test]
     fn test_project_hash() {
         assert_eq!(
             project_hash("/Users/test/my_project"),
@@ -1014,9 +1248,6 @@ mod tests {
         );
 
         // Empty cwd -> base directory itself
-        assert_eq!(
-            state_dir_for_cwd(""),
-            std::path::PathBuf::from(&base)
-        );
+        assert_eq!(state_dir_for_cwd(""), std::path::PathBuf::from(&base));
     }
 }

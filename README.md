@@ -1,6 +1,6 @@
 # Claude Bar
 
-A native macOS menu bar app that shows the status of your running Claude Code sessions. Uses SF Symbols to display session status at a glance — the icon auto-hides when no sessions are running.
+A native macOS menu bar app that shows the status of your running Claude Code and Codex sessions. Uses SF Symbols to display session status at a glance — the icon auto-hides when no sessions are running.
 
 ![demo](doc/example.gif)
 
@@ -20,11 +20,11 @@ Click the icon to see a dropdown with project names and status. Click any projec
 
 Two binaries work together:
 
-- **`claude-bar poll`** (Rust) — single-shot polling. Discovers running `claude` processes via `pgrep`/`ps`/`lsof`, detects terminals (iTerm2 + Alacritty), reads Claude Code transcripts to determine status, and outputs `[SessionInfo]` JSON to stdout.
+- **`claude-bar poll`** (Rust) — single-shot polling. Discovers running `claude` and `codex` processes via `pgrep`/`ps`/`lsof`, detects terminals (iTerm2 + Alacritty), reads Claude Code transcripts or Codex session logs to determine status, and outputs `[SessionInfo]` JSON to stdout.
 
 - **`claude-bar-app`** (Swift) — native `NSStatusItem` menu bar app, managed by launchd. Calls `claude-bar poll` every 2 seconds and renders SF Symbol icons + dropdown menu.
 
-- **`claude-bar hook`** — registered as a Claude Code `SessionStart` hook. Reads session JSON from stdin and writes a state file for reliable transcript resolution.
+- **`claude-bar hook`** — registered as a Claude Code `SessionStart` hook. Reads session JSON from stdin and writes a state file for reliable Claude transcript resolution.
 
 - **`claude-bar focus`** — activated on dropdown click. Brings the corresponding terminal window/tab to the foreground via AppleScript (iTerm2) or window matching (Alacritty).
 
@@ -33,7 +33,7 @@ Sessions are auto-discovered — no manual configuration needed.
 ## Prerequisites
 
 - macOS
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI and/or Codex CLI
 - [Rust toolchain](https://rustup.rs/) (for building)
 - Xcode Command Line Tools (for `swiftc`)
 - iTerm2 and/or Alacritty (also works under Zellij/tmux)
@@ -59,7 +59,7 @@ Sessions are auto-discovered — no manual configuration needed.
    - Start a launchd daemon (`com.claude.claude-bar-daemon`)
    - Register a `SessionStart` hook in `~/.claude/settings.json`
 
-3. The icon appears automatically when Claude Code sessions are running.
+3. The icon appears automatically when Claude Code or Codex sessions are running.
 
 ## Uninstallation
 
@@ -80,9 +80,10 @@ claude-bar-app  (Swift, launchd-managed NSStatusItem)
          │
 claude-bar poll  (Rust, single-shot)
     │
-    ├── pgrep/ps/lsof → discover claude processes + TTYs
+    ├── pgrep/ps/lsof → discover claude/codex processes + TTYs
     ├── iTerm2 AppleScript / Alacritty lsof → detect terminals
-    └── ~/.claude/projects/*/*.jsonl → parse transcripts, detect status
+    ├── ~/.claude/projects/*/*.jsonl → parse Claude transcripts
+    └── ~/.codex/sessions/**/*.jsonl → parse Codex session logs, detect status
 
 claude-bar hook  (Rust, SessionStart hook, stdin JSON)
     └── write state file for transcript resolution

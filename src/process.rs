@@ -1,3 +1,4 @@
+use crate::state::Provider;
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -68,15 +69,30 @@ pub fn parse_ps_ppid(output: &str) -> Option<u32> {
     output.trim().parse::<u32>().ok()
 }
 
-/// Find all claude PIDs via pgrep.
-pub fn find_claude_pids() -> Vec<u32> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentProcess {
+    pub pid: u32,
+    pub provider: Provider,
+}
+
+fn find_pids_by_name(process_name: &str) -> Vec<u32> {
     let output = Command::new("pgrep")
-        .args(["-x", "claude"])
+        .args(["-x", process_name])
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
     parse_pgrep_output(&output)
+}
+
+/// Find all claude PIDs via pgrep.
+pub fn find_claude_pids() -> Vec<u32> {
+    find_pids_by_name("claude")
+}
+
+/// Find all codex PIDs via pgrep.
+pub fn find_codex_pids() -> Vec<u32> {
+    find_pids_by_name("codex")
 }
 
 /// Get the TTY for a given PID.
@@ -97,15 +113,32 @@ pub fn get_pid_cwd(pid: u32) -> Option<String> {
     parse_lsof_cwd(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Build a map of TTY -> PID for all running claude processes.
-pub fn build_pid_by_tty() -> HashMap<String, u32> {
-    let pids = find_claude_pids();
-    let mut map = HashMap::new();
-    for pid in pids {
-        if let Some(tty) = get_pid_tty(pid) {
-            map.insert(tty, pid);
+/// Build a map of TTY -> (PID, provider) for Claude and Codex processes.
+pub fn build_agent_by_tty() -> HashMap<String, AgentProcess> {
+    let mut map: HashMap<String, AgentProcess> = HashMap::new();
+
+    let mut all = Vec::new();
+    all.extend(find_claude_pids().into_iter().map(|pid| AgentProcess {
+        pid,
+        provider: Provider::Claude,
+    }));
+    all.extend(find_codex_pids().into_iter().map(|pid| AgentProcess {
+        pid,
+        provider: Provider::Codex,
+    }));
+
+    for proc in all {
+        if let Some(tty) = get_pid_tty(proc.pid) {
+            // Prefer the most recently created process when two providers share a TTY.
+            match map.get(&tty) {
+                Some(existing) if existing.pid > proc.pid => {}
+                _ => {
+                    map.insert(tty, proc);
+                }
+            }
         }
     }
+
     map
 }
 
@@ -182,10 +215,7 @@ mod tests {
 
     #[test]
     fn test_parse_ps_tty() {
-        assert_eq!(
-            parse_ps_tty("ttys000\n"),
-            Some("/dev/ttys000".to_string())
-        );
+        assert_eq!(parse_ps_tty("ttys000\n"), Some("/dev/ttys000".to_string()));
         assert_eq!(
             parse_ps_tty("  ttys042  \n"),
             Some("/dev/ttys042".to_string())
@@ -257,15 +287,14 @@ mod tests {
     fn test_find_claude_in_tree() {
         let mut lookup = HashMap::new();
         // PID 100: shell (child of 50)
-        lookup.insert(100, ("zsh".to_string(), 50, Some("/dev/ttys000".to_string())));
+        lookup.insert(
+            100,
+            ("zsh".to_string(), 50, Some("/dev/ttys000".to_string())),
+        );
         // PID 50: claude (child of 1)
         lookup.insert(
             50,
-            (
-                "claude".to_string(),
-                1,
-                Some("/dev/ttys000".to_string()),
-            ),
+            ("claude".to_string(), 1, Some("/dev/ttys000".to_string())),
         );
 
         let result = find_claude_in_tree(100, &lookup);
@@ -275,8 +304,14 @@ mod tests {
     #[test]
     fn test_find_claude_in_tree_no_claude() {
         let mut lookup = HashMap::new();
-        lookup.insert(100, ("zsh".to_string(), 50, Some("/dev/ttys000".to_string())));
-        lookup.insert(50, ("bash".to_string(), 1, Some("/dev/ttys000".to_string())));
+        lookup.insert(
+            100,
+            ("zsh".to_string(), 50, Some("/dev/ttys000".to_string())),
+        );
+        lookup.insert(
+            50,
+            ("bash".to_string(), 1, Some("/dev/ttys000".to_string())),
+        );
 
         assert_eq!(find_claude_in_tree(100, &lookup), None);
     }
@@ -294,10 +329,22 @@ mod tests {
     #[test]
     fn test_find_claude_in_tree_deep() {
         let mut lookup = HashMap::new();
-        lookup.insert(200, ("python3".to_string(), 150, Some("/dev/ttys001".to_string())));
-        lookup.insert(150, ("zsh".to_string(), 100, Some("/dev/ttys001".to_string())));
-        lookup.insert(100, ("node".to_string(), 50, Some("/dev/ttys001".to_string())));
-        lookup.insert(50, ("claude".to_string(), 1, Some("/dev/ttys001".to_string())));
+        lookup.insert(
+            200,
+            ("python3".to_string(), 150, Some("/dev/ttys001".to_string())),
+        );
+        lookup.insert(
+            150,
+            ("zsh".to_string(), 100, Some("/dev/ttys001".to_string())),
+        );
+        lookup.insert(
+            100,
+            ("node".to_string(), 50, Some("/dev/ttys001".to_string())),
+        );
+        lookup.insert(
+            50,
+            ("claude".to_string(), 1, Some("/dev/ttys001".to_string())),
+        );
 
         let result = find_claude_in_tree(200, &lookup);
         assert_eq!(result, Some((50, "/dev/ttys001".to_string())));
